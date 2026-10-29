@@ -10,6 +10,7 @@ repository = "https://github.com/ActivityWatch/aw-client/"
 documentation = "https://docs.activitywatch.net/"
 packages = [
     { include = "aw_client" },
+    { include = "aw_timelog" },
 ]
 
 [tool.poetry.scripts]
