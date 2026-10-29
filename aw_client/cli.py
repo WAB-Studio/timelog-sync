@@ -166,7 +166,7 @@ def query(
 
 
 @main.command(name="timelog", help="Upload the time per app of the last days to TimeLog (app and seconds, never a title)")
-@click.option("--url", envvar="TIMELOG_URL", required=True, help="TimeLog's address, e.g. https://timelogapp.vercel.app")
+@click.option("--url", envvar="TIMELOG_URL", required=True, help="TimeLog's address, e.g. https://timelog-delta.vercel.app")
 @click.option("--key", envvar="TIMELOG_KEY", required=True, help="A tl_ key from TimeLog's «Llaves»")
 @click.option("--days", default=2, show_default=True, help=f"Days to send, ending today (1 to {timelog.MAX_DAYS})")
 @click.option("--hostname", default=None, help="The watchers' hostname (default: the first window bucket)")

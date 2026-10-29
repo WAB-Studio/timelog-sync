@@ -9,11 +9,11 @@ title, never a URL.
 1. Install ActivityWatch and leave it running.
 2. `pip install git+https://github.com/WAB-Studio/timelog-sync`
 3. In TimeLog, «Llaves» → «Crear llave»; copy the `tl_` key.
-4. Try it: `aw-client timelog --url https://timelogapp.vercel.app --key tl_… --dry-run`
+4. Try it: `aw-client timelog --url https://timelog-delta.vercel.app --key tl_… --dry-run`
 5. Schedule it every hour (PowerShell):
 
    ```powershell
-   $action = New-ScheduledTaskAction -Execute "aw-client" -Argument "timelog --url https://timelogapp.vercel.app --key tl_…"
+   $action = New-ScheduledTaskAction -Execute "aw-client" -Argument "timelog --url https://timelog-delta.vercel.app --key tl_…"
    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1)
    Register-ScheduledTask -TaskName "TimeLog" -Action $action -Trigger $trigger
    ```
