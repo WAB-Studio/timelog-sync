@@ -1,4 +1,4 @@
-.PHONY: build test typecheck clean examples
+.PHONY: build test typecheck clean examples package
 
 build:
 	poetry install
@@ -28,6 +28,10 @@ typecheck:
 
 format:
 	ruff format .
+
+# Builds aw-timelog for the ActivityWatch bundle, which packages every submodule with this target.
+package:
+	pyinstaller aw-timelog.spec --clean --noconfirm
 
 clean:
 	rm -rf build dist
