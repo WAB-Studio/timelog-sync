@@ -14,7 +14,7 @@ from tabulate import tabulate
 
 import aw_client
 
-from . import queries
+from . import queries, timelog
 from .classes import default_classes, get_classes
 
 now = datetime.now(timezone.utc)
@@ -163,6 +163,27 @@ def query(
                 "Total duration:\t",
                 timedelta(seconds=sum(e["duration"] for e in period)),
             )
+
+
+@main.command(name="timelog", help="Upload the time per app of the last days to TimeLog (app and seconds, never a title)")
+@click.option("--url", envvar="TIMELOG_URL", required=True, help="TimeLog's address, e.g. https://timelogapp.vercel.app")
+@click.option("--key", envvar="TIMELOG_KEY", required=True, help="A tl_ key from TimeLog's «Llaves»")
+@click.option("--days", default=2, show_default=True, help=f"Days to send, ending today (1 to {timelog.MAX_DAYS})")
+@click.option("--hostname", default=None, help="The watchers' hostname (default: the first window bucket)")
+@click.option("--device", default=None, help="This computer's name in TimeLog (default: the hostname)")
+@click.option("--dry-run", is_flag=True, help="Print what would be sent and send nothing")
+@click.pass_obj
+def timelog_sync(
+    obj: _Context,
+    url: str,
+    key: str,
+    days: int,
+    hostname: Optional[str],
+    device: Optional[str],
+    dry_run: bool,
+):
+    result = timelog.sync(obj.client, url, key, days, hostname, device, dry_run)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 @main.command(help="Generate an activity report")

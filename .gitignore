@@ -12,3 +12,4 @@ __pycache__
 # Output from example scripts
 *.json
 *.csv
+.venv
