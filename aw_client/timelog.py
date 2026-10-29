@@ -43,7 +43,8 @@ def summarize(events: Iterable[dict]) -> List[Dict[str, object]]:
     """One row per app in whole seconds, longest first; under a second is dropped, the day capped."""
     seconds: Dict[str, int] = {}
     for event in events:
-        app = str(event.get("data", {}).get("app") or "").strip()[:200]
+        # TimeLog refuses a control character in a name.
+        app = "".join(c for c in str(event.get("data", {}).get("app") or "") if c.isprintable()).strip()[:120]
         if not app:
             continue
         seconds[app] = seconds.get(app, 0) + int(event.get("duration", 0))

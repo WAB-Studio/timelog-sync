@@ -61,3 +61,7 @@ def test_sync_queries_one_period_per_day_and_uploads_nothing_on_a_dry_run(monkey
     body = timelog.sync(Client(), "https://x", "tl_k", 2, None, "PC", dry_run=True)
     assert len(asked["periods"]) == 2
     assert [day["apps"] for day in body["days"]] == [[{"app": "Code.exe", "seconds": 60}]] * 2
+
+
+def test_summarize_drops_control_characters_from_a_name():
+    assert timelog.summarize([event("a\x00b.exe", 60)]) == [{"app": "ab.exe", "seconds": 60}]
