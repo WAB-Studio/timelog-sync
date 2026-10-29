@@ -5,6 +5,7 @@ The query keeps the window events that overlap a not-AFK stretch and merges them
 the same way the web UI's "Top applications" does. A day is a calendar day in Bogotá.
 """
 
+import re
 import socket
 from datetime import date, datetime, time, timedelta
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -16,6 +17,8 @@ TIME_ZONE = ZoneInfo("America/Bogota")
 MAX_APPS = 500
 MAX_DAYS = 31
 DAY_SECONDS = 86400
+# The shape TimeLog mints: a malformed key never reaches the network.
+KEY_PATTERN = re.compile(r"tl_[A-Za-z0-9_-]{43}")
 
 
 def build_query(hostname: Optional[str]) -> List[str]:

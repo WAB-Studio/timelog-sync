@@ -14,6 +14,7 @@ packages = [
 
 [tool.poetry.scripts]
 aw-client = "aw_client.cli:main"
+aw-timelog = "aw_client.timelog_module:main"
 
 [tool.poetry.dependencies]
 python = "^3.8"
