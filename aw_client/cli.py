@@ -182,7 +182,10 @@ def timelog_sync(
     device: Optional[str],
     dry_run: bool,
 ):
-    result = timelog.sync(obj.client, url, key, days, hostname, device, dry_run)
+    try:
+        result = timelog.sync(obj.client, url, key, days, hostname, device, dry_run)
+    except RuntimeError as error:
+        raise click.ClickException(str(error)) from None
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 

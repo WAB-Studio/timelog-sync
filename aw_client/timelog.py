@@ -83,6 +83,9 @@ def upload(url: str, key: str, body: dict, timeout: float = 30) -> dict:
 
 def sync(client, url: str, key: str, count: int, hostname: Optional[str], device: Optional[str], dry_run: bool) -> dict:
     days = days_back(datetime.now(TIME_ZONE).date(), max(1, min(count, MAX_DAYS)))
-    results = client.query("\n".join(build_query(hostname)), [period_of(day) for day in days])
+    try:
+        results = client.query("\n".join(build_query(hostname)), [period_of(day) for day in days])
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(f"ActivityWatch is not answering at {client.server_address}: open it and try again.") from None
     body = payload(device or socket.gethostname(), results, days)
     return body if dry_run else upload(url, key, body)
