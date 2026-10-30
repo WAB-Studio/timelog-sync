@@ -4,7 +4,19 @@
 uploads each day's time per app to TimeLog. It sends the app's name and its seconds; never a window
 title, never a URL.
 
-## On Windows
+## On Windows, with the installer
+
+1. Download the installer from https://github.com/WAB-Studio/activitywatch/releases/latest and install it.
+   It is ActivityWatch with `aw-timelog` bundled; quit any ActivityWatch already running first.
+2. In TimeLog, «Llaves» → «Crear llave»; copy the `tl_` key.
+3. Right-click ActivityWatch's icon next to the clock → «TimeLog: pegar llave…» → paste it.
+
+`aw-timelog` starts with ActivityWatch and uploads within a minute, then every hour. It reads
+`aw-timelog.toml` in ActivityWatch's config folder before each upload: `key`, `url`, `device`
+(the computer's name by default), `interval_minutes` (60) and `days` (2). Its log is under
+«Open log folder» in the same menu.
+
+## On Windows, by hand
 
 1. Install ActivityWatch and leave it running.
 2. `py -m pip install --user git+https://github.com/WAB-Studio/timelog-sync@timelog`
