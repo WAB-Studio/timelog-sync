@@ -5,7 +5,7 @@ import logging
 import textwrap
 
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import click
@@ -165,12 +165,19 @@ def query(
             )
 
 
-@main.command(name="timelog", help="Upload the time per app of the last days to TimeLog (app and seconds, never a title)")
+@main.command(name="timelog", help="Upload the time per app, per website and in Claude Code of the last days to TimeLog (seconds only: never a title, a path or an event)")
 @click.option("--url", envvar="TIMELOG_URL", required=True, help="TimeLog's address, e.g. https://timelog-delta.vercel.app")
 @click.option("--key", envvar="TIMELOG_KEY", required=True, help="A tl_ key from TimeLog's «Llaves»")
 @click.option("--days", default=2, show_default=True, help=f"Days to send, ending today (1 to {timelog.MAX_DAYS})")
 @click.option("--hostname", default=None, help="The watchers' hostname (default: the first window bucket)")
 @click.option("--device", default=None, help="This computer's name in TimeLog (default: the hostname)")
+@click.option(
+    "--claude-dir",
+    "claude_dirs",
+    multiple=True,
+    help="Folder with Claude Code's session logs, repeatable (default: ~/.claude/projects; "
+    "for WSL, \\\\wsl$\\Ubuntu\\home\\<user>\\.claude\\projects)",
+)
 @click.option("--dry-run", is_flag=True, help="Print what would be sent and send nothing")
 @click.pass_obj
 def timelog_sync(
@@ -180,10 +187,11 @@ def timelog_sync(
     days: int,
     hostname: Optional[str],
     device: Optional[str],
+    claude_dirs: Tuple[str, ...],
     dry_run: bool,
 ):
     try:
-        result = timelog.sync(obj.client, url, key, days, hostname, device, dry_run)
+        result = timelog.sync(obj.client, url, key, days, hostname, device, dry_run, claude_dirs)
     except RuntimeError as error:
         raise click.ClickException(str(error)) from None
     print(json.dumps(result, indent=2, ensure_ascii=False))

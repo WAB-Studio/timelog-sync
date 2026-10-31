@@ -1,8 +1,25 @@
 # timelog-sync
 
 `aw-client` with one command more: `aw-client timelog` reads ActivityWatch on this computer and
-uploads each day's time per app to TimeLog. It sends the app's name and its seconds; never a window
-title, never a URL.
+uploads each day's time to TimeLog as seconds, classified here on the PC:
+
+- per app (its name),
+- per website, by hostname alone (`github.com`, never a path, a query or a page title),
+- Claude Code's active seconds.
+
+It never sends a window title, a URL path, a page title or an event.
+
+## Websites and Claude Code
+
+- **Websites** need ActivityWatch's browser extension (aw-watcher-web) in the browser. It makes the
+  `aw-watcher-web-*` bucket; with none, no sites are sent and TimeLog says how to install it.
+- **Claude Code** is read from its session logs (`~/.claude/projects`, that is
+  `%USERPROFILE%\.claude\projects` on Windows). Only each message's timestamp is read; time is the
+  stretches where messages are at most 5 minutes apart (a lone message is one minute), merged across
+  sessions and cut at the Bogotá day. If Claude Code runs in WSL, point at its folder with
+  `--claude-dir "\\wsl$\Ubuntu\home\<user>\.claude\projects"` (repeatable) or, for `aw-timelog`, with
+  `claude_dir` in `aw-timelog.toml` (several folders split by `;`). With no folder found nothing is
+  sent for Claude Code and TimeLog keeps what it has.
 
 ## On Windows, with the installer
 
@@ -13,7 +30,7 @@ title, never a URL.
 
 `aw-timelog` starts with ActivityWatch and uploads within a minute, then every hour. It reads
 `aw-timelog.toml` in ActivityWatch's config folder before each upload: `key`, `url`, `device`
-(the computer's name by default), `interval_minutes` (60) and `days` (2). Its log is under
+(the computer's name by default), `interval_minutes` (60), `days` (2) and `claude_dir` (Claude Code's logs). Its log is under
 «Open log folder» in the same menu.
 
 ## On Windows, by hand
