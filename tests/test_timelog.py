@@ -107,12 +107,12 @@ def test_summarize_sites_scales_a_day_past_24_hours_down_to_it():
     assert sum(row["seconds"] for row in rows) <= 86400
 
 
-def test_the_web_query_returns_the_url_and_never_the_title():
+def test_the_web_query_reads_pages_without_private_windows_over_not_afk_time():
     query = "\n".join(timelog.build_web_query("pc-casa", "aw-watcher-web-chrome"))
     assert 'query_bucket("aw-watcher-web-chrome")' in query
     assert 'filter_keyvals(afk, "status", ["not-afk"])' in query
-    assert 'merge_events_by_keys(tabs, ["url"])' in query
-    assert "title" not in query
+    assert 'exclude_keyvals(tabs, "incognito", [true])' in query
+    assert 'merge_events_by_keys(tabs, ["url", "title"])' in query
 
 
 def test_web_buckets_are_the_browser_watchers_of_this_computer():
@@ -180,8 +180,11 @@ def test_reading_session_logs_takes_timestamps_alone(tmp_path):
     (project / "s1.jsonl").write_text("\n".join(json.dumps(line) for line in lines) + "\nnot json \"timestamp\"\n", encoding="utf-8")
     (project / "notes.txt").write_text("2026-10-30T15:00:00Z", encoding="utf-8")
     sessions = timelog.read_claude_sessions([str(tmp_path)], datetime(2026, 10, 1, tzinfo=timezone.utc))
-    assert sessions == [[datetime(2026, 10, 30, 14, 0, tzinfo=timezone.utc), datetime(2026, 10, 30, 14, 2, tzinfo=timezone.utc)]]
-    assert timelog.claude_code_seconds(sessions, [DAY]) == {DAY: 120}
+    assert sessions == [
+        timelog.ClaudeSession("-home-me-app", "s1", [datetime(2026, 10, 30, 14, 0, tzinfo=timezone.utc), datetime(2026, 10, 30, 14, 2, tzinfo=timezone.utc)])
+    ]
+    assert timelog.claude_code_seconds([one.stamps for one in sessions], [DAY]) == {DAY: 120}
+    assert secret not in str(timelog.claude_session_rows(sessions, [DAY]))
 
 
 def test_a_log_older_than_the_window_is_skipped(tmp_path):
@@ -205,12 +208,13 @@ def test_payload_carries_sites_and_claude_seconds_only_when_their_source_exists(
     old = timelog.payload("PC", [[], []], days)
     assert all(set(day) == {"day", "apps"} for day in old["days"])
     body = timelog.payload(
-        "PC", [[], []], days, sites=[[tab("https://claude.ai/x", 90)], []], claude={DAY: 600}
+        "PC", [[], []], days, sites=[[tab("https://claude.ai/x", 90, "Chat")], []], claude={DAY: 600}
     )
     assert body["days"][0] == {
         "day": "2026-10-29",
         "apps": [],
         "sites": [{"host": "claude.ai", "seconds": 90}],
+        "pages": [{"host": "claude.ai", "url": "https://claude.ai/x", "title": "Chat", "seconds": 90}],
         "claude_code_seconds": 0,
     }
     assert body["days"][1]["sites"] == [] and body["days"][1]["claude_code_seconds"] == 600
@@ -230,3 +234,101 @@ def test_sync_sends_no_sites_without_a_browser_watcher_and_reads_claude_from_the
     (day,) = body["days"]
     assert "sites" not in day
     assert 0 <= day["claude_code_seconds"] <= 60
+
+
+def window(app, title, seconds):
+    return {"duration": seconds, "data": {"app": app, "title": title}}
+
+
+def test_page_of_keeps_the_path_and_drops_credentials_query_and_fragment():
+    assert timelog.page_of("https://user:pw@www.GitHub.com:8443/WAB-Studio/shelf/pull/1?tab=files#diff") == (
+        "github.com",
+        "https://github.com:8443/WAB-Studio/shelf/pull/1",
+    )
+    assert timelog.page_of("https://claude.ai/") == ("claude.ai", "https://claude.ai/")
+    assert timelog.page_of("about:blank") is None
+    assert timelog.page_of("https://x.com/" + "a" * 600) is None
+
+
+def test_pages_add_by_address_and_title_and_never_keep_a_query():
+    rows = timelog.summarize_pages(
+        [tab("https://a.com/x?token=SECRET", 30, "Page X"), tab("https://a.com/x#frag", 20, "Page X"), tab("https://a.com/y", 5, "Y")]
+    )
+    assert rows == [
+        {"host": "a.com", "url": "https://a.com/x", "title": "Page X", "seconds": 50},
+        {"host": "a.com", "url": "https://a.com/y", "title": "Y", "seconds": 5},
+    ]
+    assert "SECRET" not in str(rows)
+
+
+def test_the_default_exclusion_list_drops_banks_and_password_managers_everywhere():
+    skip = timelog.exclusions_from(None)
+    for host in ["bancolombia.com", "www.bancolombia.com", "sucursal.davivienda.com", "bbva.com.co", "nequi.com.co", "daviplata.com", "vault.bitwarden.com", "my.1password.com"]:
+        assert timelog.is_excluded(host, skip), host
+    assert not timelog.is_excluded("github.com", skip)
+    assert not timelog.is_excluded("notbancolombia.com", skip)
+    events = [tab("https://www.bancolombia.com/personas", 600, "Mis cuentas"), tab("https://github.com/a", 60, "a")]
+    assert timelog.summarize_sites(events, skip) == [{"host": "github.com", "seconds": 60}]
+    assert [row["host"] for row in timelog.summarize_pages(events, skip)] == ["github.com"]
+    apps = timelog.summarize([event("KeePassXC.exe", 300), event("Code.exe", 60), event("1Password.exe", 50)], skip)
+    assert apps == [{"app": "Code.exe", "seconds": 60}]
+    assert timelog.summarize_windows([window("Bitwarden.exe", "Vault", 100)], skip) == []
+
+
+def test_the_exclusion_setting_replaces_the_default_and_an_empty_one_is_none():
+    assert timelog.exclusions_from(None) == timelog.DEFAULT_EXCLUDE
+    assert timelog.exclusions_from("Mybank.com; Foo.exe ;") == ["mybank.com", "foo.exe"]
+    assert timelog.exclusions_from([]) == []
+    assert timelog.is_excluded("foo.exe", ["foo"]) and timelog.is_excluded("Foo", ["foo.exe"])
+
+
+def test_window_titles_per_app_skip_browsers_private_windows_and_empty_titles():
+    rows = timelog.summarize_windows(
+        [
+            window("Code.exe", "shelf - VS Code", 100),
+            window("Code.exe", "shelf - VS Code", 50),
+            window("chrome.exe", "Bank - Google Chrome", 500),
+            window("Code.exe", "", 40),
+            window("WindowsTerminal.exe", "Incognito sketch", 70),
+            window("Slack.exe", "general | Slack", 30),
+        ]
+    )
+    assert rows == [
+        {"app": "Code.exe", "title": "shelf - VS Code", "seconds": 150},
+        {"app": "Slack.exe", "title": "general | Slack", "seconds": 30},
+    ]
+
+
+def test_a_private_window_title_or_page_is_dropped():
+    assert timelog.summarize_windows([window("Edge.exe", "x - InPrivate", 10), window("Code.exe", "Private Browsing notes", 10)]) == []
+    assert timelog.summarize_pages([tab("https://a.com/", 10, "a - Navegación privada")]) == []
+
+
+def test_claude_sessions_per_day_carry_project_session_first_last_and_seconds(tmp_path):
+    project = tmp_path / "-home-me-projects-shelf"
+    (project / "s1" / "subagents").mkdir(parents=True)
+    lines = lambda *times: "\n".join(json.dumps({"timestamp": t}) for t in times) + "\n"
+    (project / "s1.jsonl").write_text(lines("2026-10-30T14:00:00Z", "2026-10-30T14:03:00Z"), encoding="utf-8")
+    (project / "s1" / "subagents" / "agent-1.jsonl").write_text(lines("2026-10-30T14:04:00Z"), encoding="utf-8")
+    (project / "s2.jsonl").write_text(lines("2026-10-30T20:00:00Z"), encoding="utf-8")
+    sessions = timelog.read_claude_sessions([str(tmp_path)], datetime(2026, 10, 1, tzinfo=timezone.utc))
+    rows = timelog.claude_session_rows(sessions, [DAY])[DAY]
+    assert rows == [
+        {"session": "s1", "project": "-home-me-projects-shelf", "first": "2026-10-30T14:00:00Z", "last": "2026-10-30T14:04:00Z", "seconds": 240 + 0},
+        {"session": "s2", "project": "-home-me-projects-shelf", "first": "2026-10-30T20:00:00Z", "last": "2026-10-30T20:00:00Z", "seconds": 60},
+    ]
+
+
+def test_payload_names_windows_and_sessions_when_given_and_applies_the_exclusion():
+    body = timelog.payload(
+        "PC",
+        [[event("Code.exe", 60), event("KeePass.exe", 90)]],
+        [DAY],
+        titles=[[window("Code.exe", "a.py", 60)]],
+        sessions={DAY: [{"session": "s", "project": "p", "first": "x", "last": "y", "seconds": 5}]},
+        exclude=timelog.DEFAULT_EXCLUDE,
+    )
+    (day,) = body["days"]
+    assert day["apps"] == [{"app": "Code.exe", "seconds": 60}]
+    assert day["windows"] == [{"app": "Code.exe", "title": "a.py", "seconds": 60}]
+    assert day["claude_sessions"][0]["session"] == "s"

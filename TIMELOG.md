@@ -1,26 +1,27 @@
 # timelog-sync
 
 `aw-client` with one command more: `aw-client timelog` reads ActivityWatch on this computer and
-uploads each day's time to TimeLog as seconds, classified here on the PC:
+uploads each day's time to TimeLog, for the person's own eyes (TimeLog shows a person only their own rows):
 
-- per app (its name),
-- per website, by hostname alone (`github.com`, never a path, a query or a page title),
-- Claude Code's active seconds.
+- per app, and per window title inside an app,
+- per website (hostname), and per page: its address without query or fragment, and its title,
+- Claude Code's active seconds, per day and per session (id, project folder, first and last message, seconds).
 
-It never sends a window title, a URL path, a page title or an event.
+It never sends an event, a URL's query, a message of Claude Code, or anything on the exclusion list.
 
-## Websites and Claude Code
+## What stays on the PC
 
-- **Websites** need ActivityWatch's browser extension (aw-watcher-web) in the browser. It makes the
-  `aw-watcher-web-*` bucket; with none, no sites are sent and TimeLog says how to install it.
-- **Claude Code** is read from its session logs (`~/.claude/projects`, that is
-  `%USERPROFILE%\.claude\projects` on Windows). Only each message's timestamp is read; time is the
-  stretches where messages are at most 5 minutes apart (a lone message is one minute), merged across
-  sessions and cut at the Bogotá day. If Claude Code runs in WSL, point at its folder with
-  `--claude-dir "\\wsl$\Ubuntu\home\<user>\.claude\projects"` (repeatable) or, for `aw-timelog`, with
-  `claude_dir` in `aw-timelog.toml` (several folders split by `;`). With no folder found nothing is
-  sent for Claude Code and TimeLog keeps what it has.
-
+- **Private windows.** The browser watcher marks private tabs and they are dropped; a window title naming a
+  private window (Incognito, InPrivate, Private Browsing…) is dropped too.
+- **The exclusion list.** Hosts (with their subdomains) and apps never sent: not as time, a site, a page or a
+  title. It ships with Colombian banks (bancolombia.com, davivienda.com, bbva.com.co, nequi.com.co,
+  daviplata.com) and password managers (1Password, Bitwarden, LastPass, Dashlane, KeePass, KeePassXC, NordPass,
+  Proton Pass). Change it with `exclude = ["mybank.com", "Foo.exe"]` in `aw-timelog.toml` (that list replaces
+  the default; several entries as a string split by `;` also work), or `--exclude` (repeatable, added to the
+  default) and `--no-default-exclude` on the command line. `write_exclude()` in `aw_client/timelog_module.py`
+  is what a tray menu calls.
+- **Browsers' window titles.** A browser's window title is its page title: the pages above carry it, so the
+  window rows leave browsers out.
 ## On Windows, with the installer
 
 1. Download the installer from https://github.com/WAB-Studio/activitywatch/releases/latest and install it.

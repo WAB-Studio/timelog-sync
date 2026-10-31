@@ -165,7 +165,7 @@ def query(
             )
 
 
-@main.command(name="timelog", help="Upload the time per app, per website and in Claude Code of the last days to TimeLog (seconds only: never a title, a path or an event)")
+@main.command(name="timelog", help="Upload the time per app, per window title, per website and page, and in Claude Code (by session) of the last days to TimeLog; private windows and the exclusion list are never sent")
 @click.option("--url", envvar="TIMELOG_URL", required=True, help="TimeLog's address, e.g. https://timelog-delta.vercel.app")
 @click.option("--key", envvar="TIMELOG_KEY", required=True, help="A tl_ key from TimeLog's «Llaves»")
 @click.option("--days", default=2, show_default=True, help=f"Days to send, ending today (1 to {timelog.MAX_DAYS})")
@@ -178,6 +178,13 @@ def query(
     help="Folder with Claude Code's session logs, repeatable (default: ~/.claude/projects; "
     "for WSL, \\\\wsl$\\Ubuntu\\home\\<user>\\.claude\\projects)",
 )
+@click.option(
+    "--exclude",
+    "exclude",
+    multiple=True,
+    help="A host (and its subdomains) or an app never sent, repeatable; added to the default list of banks and password managers",
+)
+@click.option("--no-default-exclude", is_flag=True, help="Do not start from the default exclusion list")
 @click.option("--dry-run", is_flag=True, help="Print what would be sent and send nothing")
 @click.pass_obj
 def timelog_sync(
@@ -188,10 +195,13 @@ def timelog_sync(
     hostname: Optional[str],
     device: Optional[str],
     claude_dirs: Tuple[str, ...],
+    exclude: Tuple[str, ...],
+    no_default_exclude: bool,
     dry_run: bool,
 ):
+    skip = ([] if no_default_exclude else list(timelog.DEFAULT_EXCLUDE)) + [item.strip().lower() for item in exclude]
     try:
-        result = timelog.sync(obj.client, url, key, days, hostname, device, dry_run, claude_dirs)
+        result = timelog.sync(obj.client, url, key, days, hostname, device, dry_run, claude_dirs, skip)
     except RuntimeError as error:
         raise click.ClickException(str(error)) from None
     print(json.dumps(result, indent=2, ensure_ascii=False))
