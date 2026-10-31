@@ -11,7 +11,7 @@ import logging
 import os
 import socket
 import time
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import tomlkit
 from aw_core import dirs
@@ -37,7 +37,7 @@ def config_path() -> str:
 
 def read_settings(path: Optional[str] = None) -> dict:
     """The file's settings over the defaults; a missing or broken file is the defaults."""
-    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2}
+    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None}
     try:
         with open(path or config_path(), encoding="utf-8") as file:
             stored = tomlkit.parse(file.read()).get(APP_NAME, {})
@@ -65,6 +65,20 @@ def write_key(key: str, device: Optional[str] = None, path: Optional[str] = None
         file.write(tomlkit.dumps(document))
 
 
+def write_exclude(entries: List[str], path: Optional[str] = None) -> None:
+    """Keeps every other setting in the file; the tray's exclusion list calls this."""
+    path = path or config_path()
+    try:
+        with open(path, encoding="utf-8") as file:
+            document = tomlkit.parse(file.read())
+    except (OSError, tomlkit.exceptions.TOMLKitError):
+        document = tomlkit.document()
+    section = document.setdefault(APP_NAME, tomlkit.table())
+    section["exclude"] = [entry.strip().lower() for entry in entries if entry.strip()]
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(tomlkit.dumps(document))
+
+
 def run_once(client, settings: dict) -> int:
     """Seconds until the next upload."""
     if not timelog.KEY_PATTERN.fullmatch(str(settings["key"])):
@@ -72,7 +86,15 @@ def run_once(client, settings: dict) -> int:
         return NO_KEY_SECONDS
     try:
         result = timelog.sync(
-            client, settings["url"], settings["key"], int(settings["days"]), None, settings["device"], False
+            client,
+            settings["url"],
+            settings["key"],
+            int(settings["days"]),
+            None,
+            settings["device"],
+            False,
+            timelog.claude_dirs_from(settings["claude_dir"]),
+            timelog.exclusions_from(settings["exclude"]),
         )
     except Exception as error:
         logger.warning(f"Upload failed, trying again in {RETRY_SECONDS // 60} min: {error}")
@@ -87,7 +109,7 @@ def loop(client, read: Callable[[], dict] = read_settings, sleep: Callable[[floa
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(APP_NAME, description="Uploads each day's time per app to TimeLog")
+    parser = argparse.ArgumentParser(APP_NAME, description="Uploads each day's time per app, site and Claude Code to TimeLog")
     parser.add_argument("--testing", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()

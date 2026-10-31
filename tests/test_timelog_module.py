@@ -60,3 +60,13 @@ def test_the_loop_reads_the_file_again_before_every_upload(monkeypatch):
     except SystemExit:
         pass
     assert waits == [timelog_module.NO_KEY_SECONDS, 3600]
+
+
+def test_write_exclude_keeps_the_other_settings_and_is_read_back(tmp_path):
+    path = tmp_path / "aw-timelog.toml"
+    path.write_text('[aw-timelog]\ninterval_minutes = 15\n', encoding="utf-8")
+    timelog_module.write_exclude(["MyBank.com", " Foo.exe ", ""], path=str(path))
+    settings = timelog_module.read_settings(str(path))
+    assert settings["interval_minutes"] == 15
+    assert timelog.exclusions_from(settings["exclude"]) == ["mybank.com", "foo.exe"]
+    assert timelog.exclusions_from(timelog_module.read_settings("/nonexistent")["exclude"]) == timelog.DEFAULT_EXCLUDE
