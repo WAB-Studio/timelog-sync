@@ -11,8 +11,9 @@ It never sends an event, a URL's query, a message of Claude Code, or anything on
 
 ## What stays on the PC
 
-- **Private windows.** The browser watcher marks private tabs and they are dropped; a window title naming a
-  private window (Incognito, InPrivate, Private Browsing…) is dropped too.
+- **Private windows.** A window title naming a private window (Incognito, InPrivate, Private Browsing,
+  «Modo incógnito», «Navegación privada»…) is dropped, and so is a window whose controls name one. Private
+  windows are absent from the browsers' history anyway.
 - **The exclusion list.** Hosts (with their subdomains) and apps never sent: not as time, a site, a page or a
   title. It ships with Colombian banks (bancolombia.com, davivienda.com, bbva.com.co, nequi.com.co,
   daviplata.com) and password managers (1Password, Bitwarden, LastPass, Dashlane, KeePass, KeePassXC, NordPass,
@@ -20,8 +21,18 @@ It never sends an event, a URL's query, a message of Claude Code, or anything on
   the default; several entries as a string split by `;` also work), or `--exclude` (repeatable, added to the
   default) and `--no-default-exclude` on the command line. `write_exclude()` in `aw_client/timelog_module.py`
   is what a tray menu calls.
-- **Browsers' window titles.** A browser's window title is its page title: the pages above carry it, so the
-  window rows leave browsers out.
+- **Browsers.** No browser extension, for Chrome, Edge, Brave, Vivaldi, Opera, Arc, Chromium and Firefox.
+  On Windows `aw-timelog` reads the address bar of the focused browser window every `poll_seconds` (5) through
+  UI Automation and keeps the page (host, address without query or fragment, title) and its seconds in a small
+  SQLite file in its data folder. Private windows, excluded hosts and an address being typed are never written.
+  Only the time ActivityWatch says you were at the computer counts. Where there is no sample (another
+  system, or the reading failed) the focused window's title, without «- Google Chrome», «— Mozilla Firefox»,
+  «- Microsoft Edge»…, is looked up in the browser's own history (every profile): the file is copied to a
+  temporary folder and the copy is read, the original is never written. A title nothing places is not sent;
+  its time stays under the browser's app row. Safari is not read.
+- **VS Code.** Its window titles («file — folder — Visual Studio Code», Insiders, Cursor, WSL and Remote
+  windows) go up like any window title; TimeLog groups them by project folder.
+
 ## On Windows, with the installer
 
 1. Download the installer from https://github.com/WAB-Studio/activitywatch/releases/latest and install it.
@@ -31,7 +42,7 @@ It never sends an event, a URL's query, a message of Claude Code, or anything on
 
 `aw-timelog` starts with ActivityWatch and uploads within a minute, then every hour. It reads
 `aw-timelog.toml` in ActivityWatch's config folder before each upload: `key`, `url`, `device`
-(the computer's name by default), `interval_minutes` (60), `days` (2) and `claude_dir` (Claude Code's logs). Its log is under
+(the computer's name by default), `interval_minutes` (60), `days` (2), `claude_dir` (Claude Code's logs), `poll_seconds` (5; 0 turns the address-bar reading off) and, only to override the automatic search, `browser_history` (a list of history files or browser data folders; under WSL, `/mnt/c/Users/<user>/AppData/Local/...`). Its log is under
 «Open log folder» in the same menu.
 
 ## On Windows, by hand
