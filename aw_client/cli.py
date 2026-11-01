@@ -14,7 +14,7 @@ from tabulate import tabulate
 
 import aw_client
 
-from . import queries, timelog
+from . import address_bar, queries, timelog
 from .classes import default_classes, get_classes
 
 now = datetime.now(timezone.utc)
@@ -208,7 +208,7 @@ def timelog_sync(
 ):
     skip = ([] if no_default_exclude else list(timelog.DEFAULT_EXCLUDE)) + [item.strip().lower() for item in exclude]
     try:
-        result = timelog.sync(obj.client, url, key, days, hostname, device, dry_run, claude_dirs, skip, browser_history)
+        result = timelog.sync(obj.client, url, key, days, hostname, device, dry_run, claude_dirs, skip, browser_history, address_bar.data_path())
     except RuntimeError as error:
         raise click.ClickException(str(error)) from None
     print(json.dumps(result, indent=2, ensure_ascii=False))

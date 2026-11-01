@@ -288,8 +288,6 @@ def test_window_titles_per_app_skip_browsers_private_windows_and_empty_titles():
         {"app": "Code.exe", "title": "shelf - VS Code", "seconds": 150},
         {"app": "Slack.exe", "title": "general | Slack", "seconds": 30},
     ]
-    kept = timelog.summarize_windows([window("chrome.exe", "Bank - Google Chrome", 500)], keep_browsers=True)
-    assert kept == [{"app": "chrome.exe", "title": "Bank - Google Chrome", "seconds": 500}]
 
 
 def test_a_private_window_title_or_page_is_dropped():

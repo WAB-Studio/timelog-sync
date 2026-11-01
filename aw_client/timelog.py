@@ -64,7 +64,7 @@ DEFAULT_EXCLUDE = [
     "pass.proton.me", "keepass", "keepassxc", "1password", "bitwarden", "lastpass", "dashlane", "nordpass",
 ]
 # A window title that names a private window.
-PRIVATE_TITLE = re.compile(r"incognito|inprivate|private browsing|private window|navegaci[oó]n privada|ventana privada|modo privado", re.I)
+PRIVATE_TITLE = re.compile(r"inc[oó]gnito|inprivate|private browsing|private window|navegaci[oó]n privada|ventana privada|modo privado|modo inc[oó]gnito", re.I)
 
 
 def exclusions_from(value: object) -> List[str]:
@@ -224,15 +224,15 @@ def summarize_pages(events: Iterable[dict], exclude: Sequence[str] = ()) -> List
     )
 
 
-def summarize_windows(events: Iterable[dict], exclude: Sequence[str] = (), keep_browsers: bool = False) -> List[Dict[str, object]]:
-    """One row per (app, window title), longest first. A browser's titles are left out unless `keep_browsers`
-    (the ones its history could not place); so are excluded apps and titles naming a private window."""
+def summarize_windows(events: Iterable[dict], exclude: Sequence[str] = ()) -> List[Dict[str, object]]:
+    """One row per (app, window title), longest first. A browser's titles are never a row (its pages are kept above,
+    its time stays under the app); neither are excluded apps and titles naming a private window."""
     seconds: Dict[Tuple[str, str], int] = {}
     for event in events:
         data = event.get("data", {})
         app = printable(data.get("app"), 120)
         title = printable(data.get("title"), MAX_TITLE)
-        if not app or not title or (is_browser(app) and not keep_browsers) or is_excluded(app, exclude) or PRIVATE_TITLE.search(title):
+        if not app or not title or is_browser(app) or is_excluded(app, exclude) or PRIVATE_TITLE.search(title):
             continue
         seconds[(app, title)] = seconds.get((app, title), 0) + int(event.get("duration", 0))
     return _capped([{"app": app, "title": title, "seconds": value} for (app, title), value in seconds.items() if value >= 1], MAX_WINDOWS)
@@ -389,7 +389,7 @@ def payload(
     for index, (day, events) in enumerate(zip(days, results)):
         row: Dict[str, object] = {"day": day.isoformat(), "apps": summarize(events, exclude)}
         if titles is not None:
-            row["windows"] = summarize_windows(titles[index], exclude, keep_browsers=True)
+            row["windows"] = summarize_windows(titles[index], exclude)
         if sites is not None:
             row["sites"] = summarize_sites(sites[index], exclude)
             row["pages"] = summarize_pages(sites[index], exclude)
@@ -414,42 +414,43 @@ def upload(url: str, key: str, body: dict, timeout: float = 30) -> dict:
     return response.json()
 
 
-def _names_excluded(title: str, exclude: Sequence[str]) -> bool:
-    """A title the history could not place still names an excluded site by its name («Bancolombia - Mis cuentas»)."""
-    lowered = title.lower()
-    return any(len(label) >= 4 and label in lowered for label in (entry.split(".")[0] for entry in exclude if entry))
+def _page_event(seconds: float, url: str, title: str) -> dict:
+    return {"duration": seconds, "data": {"url": url, "title": title}}
 
 
 def resolve_browser(
-    days_events: List[List[dict]], history: "browser_history.History", exclude: Sequence[str] = ()
-) -> Tuple[List[List[dict]], List[List[dict]]]:
-    """Per day, (pages, unplaced): each focused browser window's seconds as a page event with its address from the history,
-    or as a window event (app and title) when the history has no page of that title. Private windows are dropped."""
-    pages: List[List[dict]] = []
-    unplaced: List[List[dict]] = []
+    days_events: List[List[dict]], history: "browser_history.History", store: Optional[object] = None
+) -> List[List[dict]]:
+    """Per day, the focused browser windows as page events. A stretch the address-bar poller sampled takes its address
+    from the samples (only the seconds they overlap the window); the rest takes it from the browser's history by title
+    and time. A title neither knows is not sent: its time stays under the browser's app row. Private windows are dropped."""
+    days: List[List[dict]] = []
     for events in days_events:
         found: List[dict] = []
-        left: List[dict] = []
         for event in events:
             data = event.get("data", {})
             title = str(data.get("title") or "")
             if not title.strip() or PRIVATE_TITLE.search(title):
                 continue
-            when = browser_history.event_time(event)
+            start = browser_history.event_time(event)
+            duration = float(event.get("duration", 0))
+            left = duration
+            if store is not None and start:
+                for sample in store.between(start, start + duration):  # type: ignore[attr-defined]
+                    overlap = min(sample.end, start + duration) - max(sample.start, start)
+                    if overlap > 0:
+                        found.append(_page_event(overlap, sample.url, sample.title))
+                        left -= overlap
+            if left < 1:
+                continue
             candidates = browser_history.page_titles(title)
-            url, page_title = None, candidates[0] if candidates else title
             for candidate in candidates:
-                url = history.find(candidate, when)
+                url = history.find(candidate, start)
                 if url:
-                    page_title = candidate
+                    found.append(_page_event(left, url, candidate))
                     break
-            if url:
-                found.append({"duration": event.get("duration", 0), "data": {"url": url, "title": page_title}})
-            elif not _names_excluded(title, exclude):
-                left.append({"duration": event.get("duration", 0), "data": {"app": data.get("app"), "title": title}})
-        pages.append(found)
-        unplaced.append(left)
-    return pages, unplaced
+        days.append(found)
+    return days
 
 
 def sync(
@@ -463,6 +464,7 @@ def sync(
     claude_dirs: Optional[Sequence[str]] = None,
     exclude: Optional[Sequence[str]] = None,
     browser_history_paths: Optional[Sequence[str]] = None,
+    addresses_path: Optional[str] = None,
 ) -> dict:
     days = days_back(datetime.now(TIME_ZONE).date(), max(1, min(count, MAX_DAYS)))
     periods = [period_of(day) for day in days]
@@ -476,10 +478,12 @@ def sync(
     history, problems = browser_history.load_history(browser_history_paths)
     for problem in problems:
         logger.warning(f"Browser history not read: {problem}")
-    # With no history on this computer the sites are left to the server; the browser's time stays in the window rows.
-    pages, unplaced = resolve_browser(browsers, history, skip)
-    sites = pages if history else None
-    titles = [list(rows) + extra for rows, extra in zip(titles, unplaced)]
+    from .address_bar import AddressStore
+
+    store = AddressStore(addresses_path) if addresses_path and os.path.isfile(addresses_path) else None
+    pages = resolve_browser(browsers, history, store)
+    # With neither a history nor samples on this computer the sites are left to the server.
+    sites = pages if (history or store is not None) else None
     read = read_claude_sessions(claude_dirs_from(claude_dirs), periods[0][0].astimezone(timezone.utc))
     claude = None if read is None else claude_code_seconds([one.stamps for one in read], days)
     sessions = None if read is None else claude_session_rows(read, days)

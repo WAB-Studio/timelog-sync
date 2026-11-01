@@ -19,7 +19,7 @@ from aw_core.log import setup_logging
 
 import aw_client
 
-from . import timelog
+from . import address_bar, timelog
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def config_path() -> str:
 
 def read_settings(path: Optional[str] = None) -> dict:
     """The file's settings over the defaults; a missing or broken file is the defaults."""
-    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None, "browser_history": None}
+    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None, "browser_history": None, "poll_seconds": 5}
     try:
         with open(path or config_path(), encoding="utf-8") as file:
             stored = tomlkit.parse(file.read()).get(APP_NAME, {})
@@ -96,6 +96,7 @@ def run_once(client, settings: dict) -> int:
             timelog.claude_dirs_from(settings["claude_dir"]),
             timelog.exclusions_from(settings["exclude"]),
             settings["browser_history"],
+            address_bar.data_path(),
         )
     except Exception as error:
         logger.warning(f"Upload failed, trying again in {RETRY_SECONDS // 60} min: {error}")
@@ -122,6 +123,8 @@ def main() -> None:
     except Exception:
         # A server still down only delays the first upload: `run_once` retries on its own.
         logger.warning("ActivityWatch's server did not answer in 60 s; uploading anyway on schedule.")
+    # Reads the address bar beside the upload loop; a no-op off Windows.
+    address_bar.start(read_settings)
     loop(client)
 
 

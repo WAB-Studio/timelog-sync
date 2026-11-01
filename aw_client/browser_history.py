@@ -57,8 +57,11 @@ def page_titles(window_title: object) -> List[str]:
 
 
 def _chromium_roots(env: Dict[str, str]) -> List[str]:
-    local, home = env.get("LOCALAPPDATA", ""), os.path.expanduser("~")
+    local, roaming, home = env.get("LOCALAPPDATA", ""), env.get("APPDATA", ""), os.path.expanduser("~")
     roots = []
+    if roaming:
+        # Opera keeps its profile folder itself as the data folder.
+        roots += [os.path.join(roaming, "Opera Software", name) for name in ["Opera Stable", "Opera GX Stable"]]
     if local:
         roots += [
             os.path.join(local, "Google", "Chrome", "User Data"),
@@ -66,6 +69,8 @@ def _chromium_roots(env: Dict[str, str]) -> List[str]:
             os.path.join(local, "BraveSoftware", "Brave-Browser", "User Data"),
             os.path.join(local, "Vivaldi", "User Data"),
             os.path.join(local, "Chromium", "User Data"),
+            # Arc for Windows is a Store app: its data sits under a package folder.
+            os.path.join(local, "Packages", "TheBrowserCompany.Arc_*", "LocalCache", "Local", "Arc", "User Data"),
         ]
     roots += [
         os.path.join(home, ".config", name)
@@ -105,9 +110,10 @@ def history_files(configured: Union[str, Sequence[str], None] = None, env: Optio
     else:
         folders = _chromium_roots(env) + _firefox_roots(env)
     files: List[str] = []
-    for path in folders:
-        found = [path] if os.path.isfile(path) else _in_folder(path)
-        files += [item for item in found if item not in files]
+    for pattern in folders:
+        for path in (glob.glob(pattern) if glob.has_magic(pattern) else [pattern]):
+            found = [path] if os.path.isfile(path) else _in_folder(path)
+            files += [item for item in found if item not in files]
     return files
 
 

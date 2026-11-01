@@ -28,6 +28,8 @@ tomlkit = "*"
 typing-extensions = "*"
 # Windows ships no IANA zone database; `timelog` reads America/Bogota from it.
 tzdata = { version = "*", markers = "sys_platform == 'win32'" }
+# Reads the browser's address bar through UI Automation (Windows only; absent elsewhere).
+comtypes = { version = "*", markers = "sys_platform == 'win32'" }
 
 [tool.poetry.group.dev.dependencies]
 mypy = "*"

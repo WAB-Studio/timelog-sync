@@ -105,23 +105,21 @@ def browser_event(title, seconds, app="chrome.exe"):
     return {"timestamp": "2026-10-30T15:00:00+00:00", "duration": seconds, "data": {"app": app, "title": title}}
 
 
-def test_browser_time_becomes_pages_and_what_history_misses_stays_a_window_row():
+def test_browser_time_becomes_pages_and_what_nothing_places_is_not_sent():
     history = bh.History([bh.Visit("https://github.com/WAB-Studio/shelf?tab=x", "shelf", NOW), bh.Visit("https://www.bancolombia.com/personas", "Mis cuentas", NOW)])
     events = [
         browser_event("shelf - Google Chrome", 120),
         browser_event("Mis cuentas - Google Chrome", 300),
         browser_event("Unknown thing - Google Chrome", 40),
         browser_event("Secret - Google Chrome (Incognito)", 500),
-        browser_event("Bancolombia - Google Chrome", 90),
+        browser_event("Secreto - Google Chrome (Modo incógnito)", 500),
     ]
-    pages, unplaced = timelog.resolve_browser([events], history, timelog.DEFAULT_EXCLUDE)
-    assert timelog.summarize_pages(pages[0], timelog.DEFAULT_EXCLUDE) == [
+    (pages,) = timelog.resolve_browser([events], history)
+    assert timelog.summarize_pages(pages, timelog.DEFAULT_EXCLUDE) == [
         {"host": "github.com", "url": "https://github.com/WAB-Studio/shelf", "title": "shelf", "seconds": 120}
     ]
-    assert timelog.summarize_sites(pages[0], timelog.DEFAULT_EXCLUDE) == [{"host": "github.com", "seconds": 120}]
-    assert timelog.summarize_windows(unplaced[0], timelog.DEFAULT_EXCLUDE, keep_browsers=True) == [
-        {"app": "chrome.exe", "title": "Unknown thing - Google Chrome", "seconds": 40}
-    ]
+    assert timelog.summarize_sites(pages, timelog.DEFAULT_EXCLUDE) == [{"host": "github.com", "seconds": 120}]
+    assert "Unknown" not in str(pages)
 
 
 def test_sync_reads_the_browser_history_and_sends_pages_without_any_web_bucket(monkeypatch, tmp_path):
@@ -140,5 +138,15 @@ def test_sync_reads_the_browser_history_and_sends_pages_without_any_web_bucket(m
     (day,) = body["days"]
     assert day["sites"] == [{"host": "claude.ai", "seconds": 100}]
     assert day["pages"][0]["url"] == "https://claude.ai/chat/1"
-    assert {"app": "chrome.exe", "title": "Nowhere - Google Chrome", "seconds": 30} in day["windows"]
+    assert all(row["app"] != "chrome.exe" for row in day["windows"])
     assert not any("aw-watcher-web" in q for q in queries)
+
+
+def test_opera_and_arc_are_searched_in_their_usual_places(tmp_path):
+    opera = tmp_path / "roaming" / "Opera Software" / "Opera Stable"
+    arc = tmp_path / "local" / "Packages" / "TheBrowserCompany.Arc_abc" / "LocalCache" / "Local" / "Arc" / "User Data" / "Default"
+    for folder in (opera, arc):
+        folder.mkdir(parents=True)
+        chromium_db(str(folder / "History"), [("https://a.com/", "A", NOW)])
+    found = bh.history_files(None, {"APPDATA": str(tmp_path / "roaming"), "LOCALAPPDATA": str(tmp_path / "local")})
+    assert str(opera / "History") in found and str(arc / "History") in found
