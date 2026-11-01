@@ -37,7 +37,7 @@ def config_path() -> str:
 
 def read_settings(path: Optional[str] = None) -> dict:
     """The file's settings over the defaults; a missing or broken file is the defaults."""
-    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None}
+    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None, "browser_history": None}
     try:
         with open(path or config_path(), encoding="utf-8") as file:
             stored = tomlkit.parse(file.read()).get(APP_NAME, {})
@@ -95,6 +95,7 @@ def run_once(client, settings: dict) -> int:
             False,
             timelog.claude_dirs_from(settings["claude_dir"]),
             timelog.exclusions_from(settings["exclude"]),
+            settings["browser_history"],
         )
     except Exception as error:
         logger.warning(f"Upload failed, trying again in {RETRY_SECONDS // 60} min: {error}")

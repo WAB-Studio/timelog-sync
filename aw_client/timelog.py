@@ -4,17 +4,19 @@ person's own eyes: per app and per window title, per website hostname and per pa
 its query and fragment, and its title), and Claude Code's active time per day and per session.
 Never an event, a URL's query, a message of Claude Code, or anything on the exclusion list.
 
-Left out before anything is built: private windows (the browser watcher marks them, and a title
-naming one is dropped), every host or app on the exclusion list (banks and password managers by
-default), and the window titles of browsers, whose titles are the pages already kept above.
+Left out before anything is built: private windows (a title naming one is dropped), and every host
+or app on the exclusion list (banks and password managers by default).
 
 The app query keeps the window events that overlap a not-AFK stretch and merges them by app,
-the same way the web UI's "Top applications" does. The sites and pages come from the browser
-watcher's tab events over the same not-AFK stretches. Claude Code's time comes from the
+the same way the web UI's "Top applications" does. The sites and pages come from the focused
+browser window over the same not-AFK stretches: its title, without the browser's name, is looked up
+in the browser's own history on this computer (`browser_history.py`), no extension. A title the
+history does not know stays a window row. Claude Code's time comes from the
 timestamps in its session logs; their content is never read. A day is a calendar day in Bogotá.
 """
 
 import json
+import logging
 import os
 import re
 import socket
@@ -24,6 +26,10 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import requests
+
+from . import browser_history
+
+logger = logging.getLogger(__name__)
 
 TIME_ZONE = ZoneInfo("America/Bogota")
 MAX_APPS = 500
@@ -40,7 +46,7 @@ CLAUDE_GAP_SECONDS = 300
 CLAUDE_LONE_SECONDS = 60
 # What TimeLog accepts as a site: a hostname, never anything that could carry a path or a query.
 HOST_PATTERN = re.compile(r"[a-z0-9]([a-z0-9.-]{0,118}[a-z0-9])?")
-# Windows, macOS and Linux names of the browsers the web watcher can sit in.
+# Windows, macOS and Linux names of the browsers whose history is read.
 BROWSER_APPS = [
     "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe", "chromium.exe",
     "Google Chrome", "Microsoft Edge", "Firefox", "Brave Browser", "Opera", "Vivaldi", "Arc", "Safari",
@@ -90,13 +96,19 @@ def printable(text: object, limit: int) -> str:
     return "".join(c for c in str(text or "") if c.isprintable()).strip()[:limit]
 
 
+def _browser_list() -> str:
+    return ", ".join(json.dumps(name) for name in BROWSER_APPS)
+
+
 def build_titles_query(hostname: Optional[str]) -> List[str]:
+    """Window titles of everything but browsers, whose pages `build_browser_query` reads."""
     host = f', "{hostname}"' if hostname else ""
     return [
         f'window = flood(query_bucket(find_bucket("aw-watcher-window_"{host})));',
         f'afk = flood(query_bucket(find_bucket("aw-watcher-afk_"{host})));',
         'not_afk = filter_keyvals(afk, "status", ["not-afk"]);',
         "window = filter_period_intersect(window, not_afk);",
+        f'window = exclude_keyvals(window, "app", [{_browser_list()}]);',
         'RETURN = sort_by_duration(merge_events_by_keys(window, ["app", "title"]));',
     ]
 
@@ -112,31 +124,16 @@ def build_query(hostname: Optional[str]) -> List[str]:
     ]
 
 
-def build_web_query(hostname: Optional[str], bucket: str) -> List[str]:
-    """One browser's tabs, by page, over the stretches the person was at the computer with a browser in front."""
+def build_browser_query(hostname: Optional[str]) -> List[str]:
+    """The focused browser windows over not-AFK time, event by event: each keeps its start, which dates the history lookup."""
     host = f', "{hostname}"' if hostname else ""
-    browsers = ", ".join(json.dumps(name) for name in BROWSER_APPS)
     return [
-        f'tabs = flood(query_bucket({json.dumps(bucket)}));',
         f'window = flood(query_bucket(find_bucket("aw-watcher-window_"{host})));',
         f'afk = flood(query_bucket(find_bucket("aw-watcher-afk_"{host})));',
         'not_afk = filter_keyvals(afk, "status", ["not-afk"]);',
-        f'browser = filter_keyvals(window, "app", [{browsers}]);',
-        # A private window is never read: the watcher marks its tabs.
-        'tabs = exclude_keyvals(tabs, "incognito", [true]);',
-        "tabs = filter_period_intersect(tabs, not_afk);",
-        "tabs = filter_period_intersect(tabs, browser);",
-        'RETURN = sort_by_duration(merge_events_by_keys(tabs, ["url", "title"]));',
+        "window = filter_period_intersect(window, not_afk);",
+        f'RETURN = filter_keyvals(window, "app", [{_browser_list()}]);',
     ]
-
-
-def web_buckets(buckets: Dict[str, dict], hostname: Optional[str]) -> List[str]:
-    """The browser watchers' bucket ids, optionally those of one computer."""
-    return sorted(
-        name
-        for name, info in buckets.items()
-        if name.startswith("aw-watcher-web") and (not hostname or info.get("hostname") in (None, hostname))
-    )
 
 
 def days_back(today: date, count: int) -> List[date]:
@@ -227,15 +224,15 @@ def summarize_pages(events: Iterable[dict], exclude: Sequence[str] = ()) -> List
     )
 
 
-def summarize_windows(events: Iterable[dict], exclude: Sequence[str] = ()) -> List[Dict[str, object]]:
-    """One row per (app, window title), longest first. A browser's titles are its pages, kept above, so they are left out;
-    so are excluded apps and titles naming a private window."""
+def summarize_windows(events: Iterable[dict], exclude: Sequence[str] = (), keep_browsers: bool = False) -> List[Dict[str, object]]:
+    """One row per (app, window title), longest first. A browser's titles are left out unless `keep_browsers`
+    (the ones its history could not place); so are excluded apps and titles naming a private window."""
     seconds: Dict[Tuple[str, str], int] = {}
     for event in events:
         data = event.get("data", {})
         app = printable(data.get("app"), 120)
         title = printable(data.get("title"), MAX_TITLE)
-        if not app or not title or is_browser(app) or is_excluded(app, exclude) or PRIVATE_TITLE.search(title):
+        if not app or not title or (is_browser(app) and not keep_browsers) or is_excluded(app, exclude) or PRIVATE_TITLE.search(title):
             continue
         seconds[(app, title)] = seconds.get((app, title), 0) + int(event.get("duration", 0))
     return _capped([{"app": app, "title": title, "seconds": value} for (app, title), value in seconds.items() if value >= 1], MAX_WINDOWS)
@@ -387,12 +384,12 @@ def payload(
     sessions: Optional[Dict[date, List[Dict[str, object]]]] = None,
     exclude: Sequence[str] = (),
 ) -> dict:
-    """Each part a source gives is named in its day; one left out (no browser watcher, no Claude folder) leaves what the server has."""
+    """Each part a source gives is named in its day; one left out (no browser history, no Claude folder) leaves what the server has."""
     rows = []
     for index, (day, events) in enumerate(zip(days, results)):
         row: Dict[str, object] = {"day": day.isoformat(), "apps": summarize(events, exclude)}
         if titles is not None:
-            row["windows"] = summarize_windows(titles[index], exclude)
+            row["windows"] = summarize_windows(titles[index], exclude, keep_browsers=True)
         if sites is not None:
             row["sites"] = summarize_sites(sites[index], exclude)
             row["pages"] = summarize_pages(sites[index], exclude)
@@ -417,16 +414,42 @@ def upload(url: str, key: str, body: dict, timeout: float = 30) -> dict:
     return response.json()
 
 
-def read_sites(client, hostname: Optional[str], periods: List[Tuple[datetime, datetime]]) -> Optional[List[List[dict]]]:
-    """Every browser watcher's tab events per day, or None when no browser watcher exists."""
-    buckets = web_buckets(client.get_buckets(), hostname)
-    if not buckets:
-        return None
-    merged: List[List[dict]] = [[] for _ in periods]
-    for bucket in buckets:
-        for index, events in enumerate(client.query("\n".join(build_web_query(hostname, bucket)), periods)):
-            merged[index].extend(events)
-    return merged
+def _names_excluded(title: str, exclude: Sequence[str]) -> bool:
+    """A title the history could not place still names an excluded site by its name («Bancolombia - Mis cuentas»)."""
+    lowered = title.lower()
+    return any(len(label) >= 4 and label in lowered for label in (entry.split(".")[0] for entry in exclude if entry))
+
+
+def resolve_browser(
+    days_events: List[List[dict]], history: "browser_history.History", exclude: Sequence[str] = ()
+) -> Tuple[List[List[dict]], List[List[dict]]]:
+    """Per day, (pages, unplaced): each focused browser window's seconds as a page event with its address from the history,
+    or as a window event (app and title) when the history has no page of that title. Private windows are dropped."""
+    pages: List[List[dict]] = []
+    unplaced: List[List[dict]] = []
+    for events in days_events:
+        found: List[dict] = []
+        left: List[dict] = []
+        for event in events:
+            data = event.get("data", {})
+            title = str(data.get("title") or "")
+            if not title.strip() or PRIVATE_TITLE.search(title):
+                continue
+            when = browser_history.event_time(event)
+            candidates = browser_history.page_titles(title)
+            url, page_title = None, candidates[0] if candidates else title
+            for candidate in candidates:
+                url = history.find(candidate, when)
+                if url:
+                    page_title = candidate
+                    break
+            if url:
+                found.append({"duration": event.get("duration", 0), "data": {"url": url, "title": page_title}})
+            elif not _names_excluded(title, exclude):
+                left.append({"duration": event.get("duration", 0), "data": {"app": data.get("app"), "title": title}})
+        pages.append(found)
+        unplaced.append(left)
+    return pages, unplaced
 
 
 def sync(
@@ -439,6 +462,7 @@ def sync(
     dry_run: bool,
     claude_dirs: Optional[Sequence[str]] = None,
     exclude: Optional[Sequence[str]] = None,
+    browser_history_paths: Optional[Sequence[str]] = None,
 ) -> dict:
     days = days_back(datetime.now(TIME_ZONE).date(), max(1, min(count, MAX_DAYS)))
     periods = [period_of(day) for day in days]
@@ -446,9 +470,16 @@ def sync(
     try:
         results = client.query("\n".join(build_query(hostname)), periods)
         titles = client.query("\n".join(build_titles_query(hostname)), periods)
-        sites = read_sites(client, hostname, periods)
+        browsers = client.query("\n".join(build_browser_query(hostname)), periods)
     except requests.exceptions.ConnectionError:
         raise RuntimeError(f"ActivityWatch is not answering at {client.server_address}: open it and try again.") from None
+    history, problems = browser_history.load_history(browser_history_paths)
+    for problem in problems:
+        logger.warning(f"Browser history not read: {problem}")
+    # With no history on this computer the sites are left to the server; the browser's time stays in the window rows.
+    pages, unplaced = resolve_browser(browsers, history, skip)
+    sites = pages if history else None
+    titles = [list(rows) + extra for rows, extra in zip(titles, unplaced)]
     read = read_claude_sessions(claude_dirs_from(claude_dirs), periods[0][0].astimezone(timezone.utc))
     claude = None if read is None else claude_code_seconds([one.stamps for one in read], days)
     sessions = None if read is None else claude_session_rows(read, days)

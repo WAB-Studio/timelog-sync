@@ -50,10 +50,9 @@ def test_the_query_reads_only_apps_with_afk_filtered_out():
 def test_sync_queries_one_period_per_day_and_uploads_nothing_on_a_dry_run(monkeypatch):
     asked = {}
 
-    class Client:
-        def get_buckets(self):
-            return {}
+    monkeypatch.setattr(timelog.browser_history, "load_history", lambda paths=None: (timelog.browser_history.History(), []))
 
+    class Client:
         def query(self, query, periods):
             asked["periods"] = periods
             return [[event("Code.exe", 60)] for _ in periods]
@@ -107,23 +106,16 @@ def test_summarize_sites_scales_a_day_past_24_hours_down_to_it():
     assert sum(row["seconds"] for row in rows) <= 86400
 
 
-def test_the_web_query_reads_pages_without_private_windows_over_not_afk_time():
-    query = "\n".join(timelog.build_web_query("pc-casa", "aw-watcher-web-chrome"))
-    assert 'query_bucket("aw-watcher-web-chrome")' in query
+def test_the_browser_query_reads_focused_browser_windows_event_by_event_over_not_afk_time():
+    query = "\n".join(timelog.build_browser_query("pc-casa"))
+    assert 'find_bucket("aw-watcher-window_", "pc-casa")' in query
     assert 'filter_keyvals(afk, "status", ["not-afk"])' in query
-    assert 'exclude_keyvals(tabs, "incognito", [true])' in query
-    assert 'merge_events_by_keys(tabs, ["url", "title"])' in query
+    assert 'filter_keyvals(window, "app", ["chrome.exe"' in query
+    assert "merge_events" not in query and "aw-watcher-web" not in query
 
 
-def test_web_buckets_are_the_browser_watchers_of_this_computer():
-    buckets = {
-        "aw-watcher-web-chrome": {"hostname": "pc"},
-        "aw-watcher-web-firefox": {"hostname": "other"},
-        "aw-watcher-window_pc": {"hostname": "pc"},
-    }
-    assert timelog.web_buckets(buckets, "pc") == ["aw-watcher-web-chrome"]
-    assert timelog.web_buckets(buckets, None) == ["aw-watcher-web-chrome", "aw-watcher-web-firefox"]
-    assert timelog.web_buckets({"aw-watcher-window_pc": {}}, None) == []
+def test_the_titles_query_leaves_browsers_to_the_browser_query():
+    assert 'exclude_keyvals(window, "app", ["chrome.exe"' in "\n".join(timelog.build_titles_query(None))
 
 
 def at(clock, day=30):
@@ -220,11 +212,10 @@ def test_payload_carries_sites_and_claude_seconds_only_when_their_source_exists(
     assert body["days"][1]["sites"] == [] and body["days"][1]["claude_code_seconds"] == 600
 
 
-def test_sync_sends_no_sites_without_a_browser_watcher_and_reads_claude_from_the_folder(monkeypatch, tmp_path):
-    class Client:
-        def get_buckets(self):
-            return {"aw-watcher-window_pc": {"hostname": "pc"}}
+def test_sync_sends_no_sites_without_a_browser_history_and_reads_claude_from_the_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(timelog.browser_history, "load_history", lambda paths=None: (timelog.browser_history.History(), []))
 
+    class Client:
         def query(self, query, periods):
             return [[event("Code.exe", 60)] for _ in periods]
 
@@ -297,6 +288,8 @@ def test_window_titles_per_app_skip_browsers_private_windows_and_empty_titles():
         {"app": "Code.exe", "title": "shelf - VS Code", "seconds": 150},
         {"app": "Slack.exe", "title": "general | Slack", "seconds": 30},
     ]
+    kept = timelog.summarize_windows([window("chrome.exe", "Bank - Google Chrome", 500)], keep_browsers=True)
+    assert kept == [{"app": "chrome.exe", "title": "Bank - Google Chrome", "seconds": 500}]
 
 
 def test_a_private_window_title_or_page_is_dropped():
