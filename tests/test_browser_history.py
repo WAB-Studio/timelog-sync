@@ -53,9 +53,38 @@ def test_the_url_is_the_exact_title_nearest_the_visit(tmp_path):
     history, problems = bh.load_history([path])
     assert problems == []
     assert history.find("Inbox", NOW) == "https://a.com/new"
-    assert history.find("Inbox", NOW - 80000) == "https://a.com/old"
+    assert history.find("Inbox", NOW - 86400) == "https://a.com/old"
+    assert history.find("Inbox", NOW - 43200) is None
     assert history.find("inbox", NOW) == "https://a.com/new"
     assert history.find("Inbox 2", NOW) is None
+
+
+def test_a_visit_must_be_close_to_the_window_and_the_real_visit_times_are_used(tmp_path):
+    path = str(tmp_path / "History")
+    chromium_db(path, [("https://a.com/", "Inbox", NOW + 99999)])
+    connection = sqlite3.connect(path)
+    connection.execute("create table visits (id integer primary key, url integer, visit_time integer)")
+    for when in (NOW - 7200, NOW - 600):
+        connection.execute("insert into visits (url, visit_time) values (1, ?)", (int((when + bh.CHROMIUM_EPOCH_OFFSET) * 1_000_000),))
+    connection.commit()
+    connection.close()
+    history, _ = bh.load_history([path], since=NOW - 3600)
+    assert history.find("Inbox", NOW, NOW + 60) == "https://a.com/"
+    assert history.find("Inbox", NOW + 3600, NOW + 3660) is None
+    assert history.find("Inbox", NOW - 7200) is None
+
+
+def test_firefox_real_visits_are_joined(tmp_path):
+    path = str(tmp_path / "places.sqlite")
+    firefox_db(path, [("https://mozilla.org/", "Mozilla", NOW + 99999)])
+    connection = sqlite3.connect(path)
+    connection.execute("create table moz_historyvisits (id integer primary key, place_id integer, visit_date integer)")
+    connection.execute("insert into moz_historyvisits (place_id, visit_date) values (1, ?)", (int((NOW - 60) * 1_000_000),))
+    connection.commit()
+    connection.close()
+    history, _ = bh.load_history([path])
+    assert history.find("Mozilla", NOW, NOW + 30) == "https://mozilla.org/"
+    assert bh.page_titles("x - Arc") == ["x"]
 
 
 def test_firefox_places_are_read_too(tmp_path):
@@ -101,8 +130,8 @@ def test_an_unreadable_file_is_a_problem_not_a_crash(tmp_path):
     assert not history and len(problems) == 1
 
 
-def browser_event(title, seconds, app="chrome.exe"):
-    return {"timestamp": "2026-10-30T15:00:00+00:00", "duration": seconds, "data": {"app": app, "title": title}}
+def browser_event(title, seconds, app="chrome.exe", at=None):
+    return {"timestamp": at or "2026-10-30T15:00:00+00:00", "duration": seconds, "data": {"app": app, "title": title}}
 
 
 def test_browser_time_becomes_pages_and_what_nothing_places_is_not_sent():
@@ -124,14 +153,15 @@ def test_browser_time_becomes_pages_and_what_nothing_places_is_not_sent():
 
 def test_sync_reads_the_browser_history_and_sends_pages_without_any_web_bucket(monkeypatch, tmp_path):
     path = str(tmp_path / "History")
-    chromium_db(path, [("https://claude.ai/chat/1?x=1", "Chat", NOW)])
+    now = datetime.now(timezone.utc).timestamp()
+    chromium_db(path, [("https://claude.ai/chat/1?x=1", "Chat", now)])
     queries = []
 
     class Client:
         def query(self, query, periods):
             queries.append(query)
             if 'filter_keyvals(window, "app"' in query:
-                return [[browser_event("Chat - Google Chrome", 100), browser_event("Nowhere - Google Chrome", 30)] for _ in periods]
+                return [[browser_event("Chat - Google Chrome", 100, at=datetime.now(timezone.utc).isoformat()), browser_event("Nowhere - Google Chrome", 30, at=datetime.now(timezone.utc).isoformat())] for _ in periods]
             return [[{"duration": 60, "data": {"app": "Code.exe", "title": "a.py"}}] for _ in periods]
 
     body = timelog.sync(Client(), "https://x", "tl_k", 1, None, "PC", True, [str(tmp_path / "none")], None, [path])

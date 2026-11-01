@@ -43,6 +43,7 @@ class Sample(NamedTuple):
     host: str
     url: str
     title: str
+    private: bool = False
 
 
 def normalize_address(text: object) -> Optional[str]:
@@ -92,32 +93,30 @@ def data_path() -> str:
 
 
 class AddressStore:
-    """Samples in SQLite: start and end (Unix seconds), host, address and title. Pruned past `KEEP_DAYS`."""
+    """Samples in SQLite: start and end (Unix seconds), host, address, title, and whether the window was private
+    (a private sample carries no address). Samples older than `KEEP_DAYS` are pruned when the store opens."""
 
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.path = path
-        with self._open() as connection:
-            connection.execute(
-                "create table if not exists samples (start real not null, end real not null, host text not null, url text not null, title text not null)"
+        self._connection = sqlite3.connect(path, timeout=10, check_same_thread=False)
+        with self._connection:
+            self._connection.execute(
+                "create table if not exists samples (start real not null, end real not null, host text not null, url text not null, title text not null, private integer not null default 0)"
             )
-            connection.execute("create index if not exists samples_start on samples (start)")
-
-    def _open(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path, timeout=10)
+            self._connection.execute("create index if not exists samples_end on samples (end)")
+            self._connection.execute("delete from samples where end < ?", (time.time() - KEEP_DAYS * 86400,))
 
     def add(self, sample: Sample) -> None:
-        with self._open() as connection:
-            connection.execute("insert into samples values (?, ?, ?, ?, ?)", sample)
-            connection.execute("delete from samples where end < ?", (sample.end - KEEP_DAYS * 86400,))
+        with self._connection:
+            self._connection.execute("insert into samples values (?, ?, ?, ?, ?, ?)", tuple(sample))
 
     def between(self, start: float, stop: float) -> List[Sample]:
         """Samples that overlap [start, stop), oldest first."""
-        with self._open() as connection:
-            rows = connection.execute(
-                "select start, end, host, url, title from samples where end > ? and start < ? order by start", (start, stop)
-            ).fetchall()
-        return [Sample(*row) for row in rows]
+        rows = self._connection.execute(
+            "select start, end, host, url, title, private from samples where end > ? and start < ? order by start", (start, stop)
+        ).fetchall()
+        return [Sample(*row[:5], bool(row[5])) for row in rows]
 
 
 class Poller:
@@ -134,6 +133,7 @@ class Poller:
         self.reader, self.store, self.exclude, self.poll = reader, store, exclude, max(1.0, float(poll_seconds))
         self.clock = clock
         self._last: Optional[float] = None
+        self._failed = False
 
     def tick(self) -> Optional[Sample]:
         now = self.clock()
@@ -141,14 +141,21 @@ class Poller:
         try:
             reading = self.reader()
         except Exception as error:
-            logger.debug(f"Address bar not read: {error}")
+            if not self._failed:
+                self._failed = True
+                logger.warning(f"Address bar not read (this is logged once): {error}")
             return None
         if reading is None:
             return None
+        start = now - self.poll if before is None or now - before > self.poll * MAX_GAP_POLLS else before
+        # A private window leaves a marker with no address, so the history fallback skips that stretch too.
+        if timelog.is_browser(reading.app) and (reading.private or timelog.PRIVATE_TITLE.search(reading.title)):
+            sample = Sample(start, now, "", "", "", True)
+            self.store.add(sample)
+            return sample
         kept = sample_of(reading, self.exclude())
         if kept is None:
             return None
-        start = now - self.poll if before is None or now - before > self.poll * MAX_GAP_POLLS else before
         sample = Sample(start, now, *kept)
         self.store.add(sample)
         return sample
@@ -159,7 +166,8 @@ class Poller:
 
 
 def windows_reader() -> Optional[Callable[[], Optional[Reading]]]:
-    """A reader of the focused window's address bar through UI Automation; None off Windows or without `comtypes`."""
+    """A reader of the focused window's address bar through UI Automation. Call it on the thread that will read:
+    COM objects belong to the thread that made them. None off Windows or without `comtypes`."""
     if os.name != "nt":
         return None
     try:
@@ -175,8 +183,11 @@ def windows_reader() -> Optional[Callable[[], Optional[Reading]]]:
         return None
     user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32  # type: ignore[attr-defined]
     automation = comtypes.client.CreateObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", interface=UIA.IUIAutomation)
-    button_condition = automation.CreatePropertyCondition(UIA.UIA_ControlTypePropertyId, UIA.UIA_ButtonControlTypeId)
-    edits = automation.CreatePropertyCondition(UIA.UIA_ControlTypePropertyId, UIA.UIA_EditControlTypeId)
+
+    def of_type(kind: int):
+        return automation.CreatePropertyCondition(UIA.UIA_ControlTypePropertyId, kind)
+
+    toolbars, buttons, edits = of_type(UIA.UIA_ToolBarControlTypeId), of_type(UIA.UIA_ButtonControlTypeId), of_type(UIA.UIA_EditControlTypeId)
 
     def app_of(window: int) -> str:
         pid = wintypes.DWORD()
@@ -201,34 +212,64 @@ def windows_reader() -> Optional[Callable[[], Optional[Reading]]]:
         title = ctypes.create_unicode_buffer(512)
         user32.GetWindowTextW(window, title, 512)
         root = automation.ElementFromHandle(window)
-        # Chromium's profile button reads «Incognito» / «InPrivate» and Firefox marks its private windows by name:
-        # a button of the window naming one makes the whole window private.
-        buttons = root.FindAll(UIA.TreeScope_Descendants, button_condition)
-        private = any(timelog.PRIVATE_TITLE.search(buttons.GetElement(i).CurrentName or "") for i in range(min(buttons.Length, 60)))
-        if private:
-            return Reading(app, title.value, "", private=True)
-        found = root.FindAll(UIA.TreeScope_Descendants, edits)
-        # The address bar comes first in the tree; page fields come after.
-        for index in range(min(found.Length, 12)):
-            element = found.GetElement(index)
-            pattern = element.GetCurrentPattern(UIA.UIA_ValuePatternId).QueryInterface(UIA.IUIAutomationValuePattern)
-            value = pattern.CurrentValue
-            if normalize_address(value):
-                return Reading(app, title.value, value, bool(element.CurrentHasKeyboardFocus))
-        return Reading(app, title.value, "")
+        # Only the browser's toolbars are searched (Chromium's ToolbarView, Firefox's nav-bar), never the page.
+        bars = root.FindAll(UIA.TreeScope_Descendants, toolbars)
+        address, focused = "", False
+        for bar_index in range(min(bars.Length, 6)):
+            bar = bars.GetElement(bar_index)
+            # Chromium's profile button reads «Incognito» / «InPrivate»; Firefox names its private windows.
+            names = bar.FindAll(UIA.TreeScope_Descendants, buttons)
+            if any(timelog.PRIVATE_TITLE.search(names.GetElement(i).CurrentName or "") for i in range(min(names.Length, 40))):
+                return Reading(app, title.value, "", private=True)
+            if address:
+                continue
+            found = bar.FindAll(UIA.TreeScope_Descendants, edits)
+            for index in range(min(found.Length, 4)):
+                element = found.GetElement(index)
+                try:
+                    value = element.GetCurrentPattern(UIA.UIA_ValuePatternId).QueryInterface(UIA.IUIAutomationValuePattern).CurrentValue
+                except Exception:
+                    continue
+                if normalize_address(value):
+                    address, focused = value, bool(element.CurrentHasKeyboardFocus)
+                    break
+        return Reading(app, title.value, address, focused)
 
     return read
 
 
 def start(read_settings: Callable[[], dict], reader: Optional[Callable[[], Optional[Reading]]] = None) -> Optional[threading.Event]:
     """Starts the poller in a daemon thread beside the upload loop; the returned event stops it. None when nothing can run
-    (not Windows, no UI Automation, or `poll_seconds` = 0)."""
-    settings = read_settings()
-    seconds = float(settings.get("poll_seconds", 5) or 0)
-    reader = reader or windows_reader()
-    if seconds <= 0 or reader is None:
+    (not Windows, or `poll_seconds` = 0). It never raises: a failure is a warning and the upload loop goes on."""
+    try:
+        seconds = float(read_settings().get("poll_seconds", 5) or 0)
+        if seconds <= 0 or (reader is None and os.name != "nt"):
+            return None
+        poller_store = AddressStore(data_path())
+        stop = threading.Event()
+
+        def work() -> None:
+            initialized = False
+            try:
+                if reader is None:
+                    import comtypes
+
+                    comtypes.CoInitializeEx()
+                    initialized = True
+                use = reader or windows_reader()
+                if use is None:
+                    return
+                Poller(use, poller_store, lambda: timelog.exclusions_from(read_settings().get("exclude")), seconds).run(stop)
+            except Exception as error:
+                logger.warning(f"Address bar reading is off: {error}")
+            finally:
+                if initialized:
+                    import comtypes
+
+                    comtypes.CoUninitialize()
+
+        threading.Thread(target=work, name="address-bar", daemon=True).start()
+        return stop
+    except Exception as error:
+        logger.warning(f"Address bar reading is off: {error}")
         return None
-    poller = Poller(reader, AddressStore(data_path()), lambda: timelog.exclusions_from(read_settings().get("exclude")), seconds)
-    stop = threading.Event()
-    threading.Thread(target=poller.run, args=(stop,), name="address-bar", daemon=True).start()
-    return stop

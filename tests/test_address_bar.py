@@ -84,3 +84,33 @@ def test_with_no_samples_the_history_decides_and_with_neither_nothing_is_sent():
 def test_the_poller_does_not_start_when_switched_off_or_without_a_reader():
     assert ab.start(lambda: {"poll_seconds": 0}, reader=lambda: None) is None
     assert ab.start(lambda: {"poll_seconds": 5}, reader=None) is None or ab.windows_reader() is not None
+
+
+def test_a_private_window_leaves_a_marker_that_keeps_its_stretch_out_of_the_history_fallback(tmp_path):
+    store = ab.AddressStore(str(tmp_path / "a.sqlite"))
+    clock = iter([T0 + 5])
+    poller = ab.Poller(lambda: reading("a.com", "x - Brave (Private)"), store, lambda: [], 5, lambda: next(clock))
+    marker = poller.tick()
+    assert marker.private and marker.url == "" and marker.host == ""
+    history = History([Visit("https://h.com/y", "X", T0)])
+    (pages,) = timelog.resolve_browser([[browser_event("X - Google Chrome", T0, 4)]], history, store)
+    assert pages == []
+
+
+def test_a_reader_that_fails_is_logged_once_and_the_poller_goes_on(tmp_path, caplog):
+    store = ab.AddressStore(str(tmp_path / "a.sqlite"))
+
+    def broken():
+        raise OSError("no")
+
+    poller = ab.Poller(broken, store, lambda: [], 5)
+    poller.tick()
+    poller.tick()
+    assert [r.levelname for r in caplog.records if "Address bar" in r.message] == ["WARNING"]
+
+
+def test_start_never_raises(monkeypatch):
+    def bad():
+        raise ValueError("boom")
+
+    assert ab.start(bad) is None

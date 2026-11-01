@@ -15,18 +15,18 @@ import shutil
 import sqlite3
 import tempfile
 import unicodedata
-from bisect import bisect_left
-from datetime import datetime, timezone
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 # Chromium counts microseconds from 1601-01-01 UTC.
 CHROMIUM_EPOCH_OFFSET = 11644473600
-BROWSER_NAMES = r"Google Chrome|Mozilla Firefox|Microsoft\W*Edge|Brave|Opera|Vivaldi|Chromium|Firefox"
+BROWSER_NAMES = r"Google Chrome|Mozilla Firefox|Microsoft\W*Edge|Brave|Opera|Vivaldi|Chromium|Firefox|Arc"
 DASH = r"\s[-–—]\s"
 # «Title - Google Chrome», «Title — Mozilla Firefox».
 SUFFIX = re.compile(rf"{DASH}(?:{BROWSER_NAMES})$", re.I)
 # Edge adds the profile: «Title - Personal - Microsoft Edge».
 PROFILE_SUFFIX = re.compile(rf"{DASH}[^-–—]+{DASH}Microsoft\W*Edge$", re.I)
+# A page counts for a window when it was visited this long before the window came to the front, or while it was there.
+VISIT_LEAD_SECONDS = 1800
 MORE_PAGES = re.compile(r"\s+and \d+ more pages?$", re.I)
 
 
@@ -131,15 +131,32 @@ def _chromium_time(value: int) -> float:
     return value / 1_000_000 - CHROMIUM_EPOCH_OFFSET
 
 
-def _read(copy: str) -> List[Visit]:
+def _read(copy: str, since: float = 0) -> List[Visit]:
+    """Every visit since `since` (Unix seconds): the real visit times where the browser keeps them, else the last visit of each page."""
     connection = sqlite3.connect(f"file:{copy}?mode=ro", uri=True)
     try:
         tables = {row[0] for row in connection.execute("select name from sqlite_master where type = 'table'")}
         if "urls" in tables:
-            rows = connection.execute("select url, title, last_visit_time from urls where title <> '' and last_visit_time > 0")
+            floor = int((since + CHROMIUM_EPOCH_OFFSET) * 1_000_000)
+            if "visits" in tables:
+                rows = connection.execute(
+                    "select u.url, u.title, v.visit_time from visits v join urls u on u.id = v.url where u.title <> '' and v.visit_time >= ?", (floor,)
+                )
+            else:
+                rows = connection.execute("select url, title, last_visit_time from urls where title <> '' and last_visit_time >= ?", (floor,))
             return [Visit(url, title, _chromium_time(when)) for url, title, when in rows]
         if "moz_places" in tables:
-            rows = connection.execute("select url, title, last_visit_date from moz_places where title is not null and title <> '' and last_visit_date is not null")
+            floor = int(since * 1_000_000)
+            if "moz_historyvisits" in tables:
+                rows = connection.execute(
+                    "select p.url, p.title, v.visit_date from moz_historyvisits v join moz_places p on p.id = v.place_id "
+                    "where p.title is not null and p.title <> '' and v.visit_date >= ?",
+                    (floor,),
+                )
+            else:
+                rows = connection.execute(
+                    "select url, title, last_visit_date from moz_places where title is not null and title <> '' and last_visit_date >= ?", (floor,)
+                )
             return [Visit(url, title, when / 1_000_000) for url, title, when in rows]
         return []
     finally:
@@ -158,37 +175,25 @@ class History:
     def __bool__(self) -> bool:
         return bool(self._by_title)
 
-    def find(self, title: str, when: float) -> Optional[str]:
-        """The address whose title is exactly `title` and whose visit is nearest to `when` (Unix seconds)."""
+    def find(self, title: str, start: float, end: Optional[float] = None) -> Optional[str]:
+        """The address whose title is exactly `title` and whose visit falls between `VISIT_LEAD_SECONDS` before `start` and `end`,
+        the nearest to `start`; None when no visit is that close (Unix seconds)."""
         items = self._by_title.get(normalize(title))
         if not items:
             return None
-        times = [item[0] for item in items]
-        at = bisect_left(times, when)
-        near = [items[i] for i in (at - 1, at) if 0 <= i < len(items)]
-        return min(near, key=lambda item: abs(item[0] - when))[1]
+        end = start if end is None else max(start, end)
+        near = [item for item in items if start - VISIT_LEAD_SECONDS <= item[0] <= end]
+        return min(near, key=lambda item: abs(item[0] - start))[1] if near else None
 
 
-def load_history(configured: Union[str, Sequence[str], None] = None, env: Optional[Dict[str, str]] = None) -> Tuple[History, List[str]]:
+def load_history(configured: Union[str, Sequence[str], None] = None, env: Optional[Dict[str, str]] = None, since: float = 0) -> Tuple[History, List[str]]:
     """(history, problems). A file that cannot be copied or read is skipped and named in the problems."""
     visits: List[Visit] = []
     problems: List[str] = []
     with tempfile.TemporaryDirectory(prefix="aw-timelog-") as folder:
         for index, path in enumerate(history_files(configured, env)):
             try:
-                visits += _read(_copy(path, folder, index))
+                visits += _read(_copy(path, folder, index), since)
             except (OSError, sqlite3.Error) as error:
                 problems.append(f"{path}: {error}")
     return History(visits), problems
-
-
-def event_time(event: dict) -> float:
-    """An ActivityWatch event's start in Unix seconds; 0 when it has none."""
-    text = str(event.get("timestamp") or "")
-    text = text[:-1] + "+00:00" if text.endswith("Z") else text
-    text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), text, count=1)
-    try:
-        stamp = datetime.fromisoformat(text)
-    except ValueError:
-        return 0.0
-    return (stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)).timestamp()

@@ -50,7 +50,7 @@ def test_the_query_reads_only_apps_with_afk_filtered_out():
 def test_sync_queries_one_period_per_day_and_uploads_nothing_on_a_dry_run(monkeypatch):
     asked = {}
 
-    monkeypatch.setattr(timelog.browser_history, "load_history", lambda paths=None: (timelog.browser_history.History(), []))
+    monkeypatch.setattr(timelog.browser_history, "load_history", lambda paths=None, since=0: (timelog.browser_history.History(), []))
 
     class Client:
         def query(self, query, periods):
@@ -110,12 +110,13 @@ def test_the_browser_query_reads_focused_browser_windows_event_by_event_over_not
     query = "\n".join(timelog.build_browser_query("pc-casa"))
     assert 'find_bucket("aw-watcher-window_", "pc-casa")' in query
     assert 'filter_keyvals(afk, "status", ["not-afk"])' in query
-    assert 'filter_keyvals(window, "app", ["chrome.exe"' in query
+    assert 'filter_keyvals(window, "app", ["chrome"' in query
+    assert '"Chrome.exe"' in query and '"google-chrome"' in query
     assert "merge_events" not in query and "aw-watcher-web" not in query
 
 
 def test_the_titles_query_leaves_browsers_to_the_browser_query():
-    assert 'exclude_keyvals(window, "app", ["chrome.exe"' in "\n".join(timelog.build_titles_query(None))
+    assert 'exclude_keyvals(window, "app", ["chrome"' in "\n".join(timelog.build_titles_query(None))
 
 
 def at(clock, day=30):
@@ -213,7 +214,7 @@ def test_payload_carries_sites_and_claude_seconds_only_when_their_source_exists(
 
 
 def test_sync_sends_no_sites_without_a_browser_history_and_reads_claude_from_the_folder(monkeypatch, tmp_path):
-    monkeypatch.setattr(timelog.browser_history, "load_history", lambda paths=None: (timelog.browser_history.History(), []))
+    monkeypatch.setattr(timelog.browser_history, "load_history", lambda paths=None, since=0: (timelog.browser_history.History(), []))
 
     class Client:
         def query(self, query, periods):
@@ -323,3 +324,13 @@ def test_payload_names_windows_and_sessions_when_given_and_applies_the_exclusion
     assert day["apps"] == [{"app": "Code.exe", "seconds": 60}]
     assert day["windows"] == [{"app": "Code.exe", "title": "a.py", "seconds": 60}]
     assert day["claude_sessions"][0]["session"] == "s"
+
+
+def test_pieces_add_before_the_seconds_are_cut_so_none_is_lost():
+    assert timelog.summarize_sites([tab("https://a.com/", 0.6), tab("https://a.com/", 0.6), tab("https://a.com/", 0.6)]) == [{"host": "a.com", "seconds": 1}]
+    assert timelog.summarize_pages([tab("https://a.com/x", 20.5), tab("https://a.com/x", 20.5)])[0]["seconds"] == 41
+
+
+def test_other_private_markers_are_dropped():
+    for title in ["x - Brave (Private)", "x - Vivaldi (Private)", "x - Mozilla Firefox (Private Browsing)", "Ventana de Incógnito"]:
+        assert timelog.PRIVATE_TITLE.search(title), title

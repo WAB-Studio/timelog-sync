@@ -64,7 +64,7 @@ DEFAULT_EXCLUDE = [
     "pass.proton.me", "keepass", "keepassxc", "1password", "bitwarden", "lastpass", "dashlane", "nordpass",
 ]
 # A window title that names a private window.
-PRIVATE_TITLE = re.compile(r"inc[oó]gnito|inprivate|private browsing|private window|navegaci[oó]n privada|ventana privada|modo privado|modo inc[oó]gnito", re.I)
+PRIVATE_TITLE = re.compile(r"inc[oó]gnito|inprivate|private browsing|private window|navegaci[oó]n privada|ventana privada|modo privado|modo inc[oó]gnito|\(private\)|private tab|tor window", re.I)
 
 
 def exclusions_from(value: object) -> List[str]:
@@ -96,8 +96,20 @@ def printable(text: object, limit: int) -> str:
     return "".join(c for c in str(text or "") if c.isprintable()).strip()[:limit]
 
 
+def _app_variants() -> List[str]:
+    """Each browser name as AW may report it: as written, lower-cased, capitalised, with and without «.exe»."""
+    names: List[str] = []
+    for name in BROWSER_APPS:
+        bare = name[:-4] if name.lower().endswith(".exe") else name
+        for form in (bare, bare.lower(), bare.capitalize(), bare.title()):
+            for variant in (form, form + ".exe"):
+                if variant not in names:
+                    names.append(variant)
+    return names
+
+
 def _browser_list() -> str:
-    return ", ".join(json.dumps(name) for name in BROWSER_APPS)
+    return ", ".join(json.dumps(name) for name in _app_variants())
 
 
 def build_titles_query(hostname: Optional[str]) -> List[str]:
@@ -148,13 +160,13 @@ def period_of(day: date) -> Tuple[datetime, datetime]:
 
 def summarize(events: Iterable[dict], exclude: Sequence[str] = ()) -> List[Dict[str, object]]:
     """One row per app in whole seconds, longest first; under a second is dropped, the day capped."""
-    seconds: Dict[str, int] = {}
+    seconds: Dict[str, float] = {}
     for event in events:
         app = printable(event.get("data", {}).get("app"), 120)
         if not app or is_excluded(app, exclude):
             continue
-        seconds[app] = seconds.get(app, 0) + int(event.get("duration", 0))
-    return _capped([{"app": app, "seconds": value} for app, value in seconds.items() if value >= 1], MAX_APPS)
+        seconds[app] = seconds.get(app, 0) + float(event.get("duration", 0))
+    return _capped([{"app": app, "seconds": int(value)} for app, value in seconds.items() if value >= 1], MAX_APPS)
 
 
 def host_of(url: object) -> Optional[str]:
@@ -184,13 +196,13 @@ def _capped(rows: List[Dict[str, object]], limit: int) -> List[Dict[str, object]
 
 def summarize_sites(events: Iterable[dict], exclude: Sequence[str] = ()) -> List[Dict[str, object]]:
     """One row per hostname in whole seconds, longest first; an excluded host is never counted."""
-    seconds: Dict[str, int] = {}
+    seconds: Dict[str, float] = {}
     for event in events:
         host = host_of(event.get("data", {}).get("url"))
         if host is None or is_excluded(host, exclude):
             continue
-        seconds[host] = seconds.get(host, 0) + int(event.get("duration", 0))
-    return _capped([{"host": host, "seconds": value} for host, value in seconds.items() if value >= 1], MAX_SITES)
+        seconds[host] = seconds.get(host, 0) + float(event.get("duration", 0))
+    return _capped([{"host": host, "seconds": int(value)} for host, value in seconds.items() if value >= 1], MAX_SITES)
 
 
 def page_of(url: object) -> Optional[Tuple[str, str]]:
@@ -206,7 +218,7 @@ def page_of(url: object) -> Optional[Tuple[str, str]]:
 
 def summarize_pages(events: Iterable[dict], exclude: Sequence[str] = ()) -> List[Dict[str, object]]:
     """One row per page (address and title), longest first. Excluded hosts and titles naming a private window are never counted."""
-    seconds: Dict[Tuple[str, str, str], int] = {}
+    seconds: Dict[Tuple[str, str, str], float] = {}
     for event in events:
         data = event.get("data", {})
         try:
@@ -217,9 +229,9 @@ def summarize_pages(events: Iterable[dict], exclude: Sequence[str] = ()) -> List
         if page is None or is_excluded(page[0], exclude) or PRIVATE_TITLE.search(title):
             continue
         key = (page[0], page[1], title)
-        seconds[key] = seconds.get(key, 0) + int(event.get("duration", 0))
+        seconds[key] = seconds.get(key, 0) + float(event.get("duration", 0))
     return _capped(
-        [{"host": host, "url": url, "title": title, "seconds": value} for (host, url, title), value in seconds.items() if value >= 1],
+        [{"host": host, "url": url, "title": title, "seconds": int(value)} for (host, url, title), value in seconds.items() if value >= 1],
         MAX_PAGES,
     )
 
@@ -227,15 +239,15 @@ def summarize_pages(events: Iterable[dict], exclude: Sequence[str] = ()) -> List
 def summarize_windows(events: Iterable[dict], exclude: Sequence[str] = ()) -> List[Dict[str, object]]:
     """One row per (app, window title), longest first. A browser's titles are never a row (its pages are kept above,
     its time stays under the app); neither are excluded apps and titles naming a private window."""
-    seconds: Dict[Tuple[str, str], int] = {}
+    seconds: Dict[Tuple[str, str], float] = {}
     for event in events:
         data = event.get("data", {})
         app = printable(data.get("app"), 120)
         title = printable(data.get("title"), MAX_TITLE)
         if not app or not title or is_browser(app) or is_excluded(app, exclude) or PRIVATE_TITLE.search(title):
             continue
-        seconds[(app, title)] = seconds.get((app, title), 0) + int(event.get("duration", 0))
-    return _capped([{"app": app, "title": title, "seconds": value} for (app, title), value in seconds.items() if value >= 1], MAX_WINDOWS)
+        seconds[(app, title)] = seconds.get((app, title), 0) + float(event.get("duration", 0))
+    return _capped([{"app": app, "title": title, "seconds": int(value)} for (app, title), value in seconds.items() if value >= 1], MAX_WINDOWS)
 
 
 def parse_stamp(value: object) -> Optional[datetime]:
@@ -432,11 +444,16 @@ def resolve_browser(
             title = str(data.get("title") or "")
             if not title.strip() or PRIVATE_TITLE.search(title):
                 continue
-            start = browser_history.event_time(event)
+            stamp = parse_stamp(event.get("timestamp"))
+            start = stamp.timestamp() if stamp else 0.0
             duration = float(event.get("duration", 0))
             left = duration
-            if store is not None and start:
-                for sample in store.between(start, start + duration):  # type: ignore[attr-defined]
+            samples = store.between(start, start + duration) if store is not None and start else []  # type: ignore[attr-defined]
+            # A window the poller saw private is not read from history either.
+            if any(sample.private for sample in samples):
+                continue
+            if samples:
+                for sample in samples:
                     overlap = min(sample.end, start + duration) - max(sample.start, start)
                     if overlap > 0:
                         found.append(_page_event(overlap, sample.url, sample.title))
@@ -445,7 +462,7 @@ def resolve_browser(
                 continue
             candidates = browser_history.page_titles(title)
             for candidate in candidates:
-                url = history.find(candidate, start)
+                url = history.find(candidate, start, start + duration)
                 if url:
                     found.append(_page_event(left, url, candidate))
                     break
@@ -475,7 +492,7 @@ def sync(
         browsers = client.query("\n".join(build_browser_query(hostname)), periods)
     except requests.exceptions.ConnectionError:
         raise RuntimeError(f"ActivityWatch is not answering at {client.server_address}: open it and try again.") from None
-    history, problems = browser_history.load_history(browser_history_paths)
+    history, problems = browser_history.load_history(browser_history_paths, since=periods[0][0].timestamp() - browser_history.VISIT_LEAD_SECONDS)
     for problem in problems:
         logger.warning(f"Browser history not read: {problem}")
     from .address_bar import AddressStore
