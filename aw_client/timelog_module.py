@@ -11,7 +11,7 @@ import logging
 import os
 import socket
 import time
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import tomlkit
 from aw_core import dirs
@@ -19,7 +19,7 @@ from aw_core.log import setup_logging
 
 import aw_client
 
-from . import timelog
+from . import address_bar, timelog, updater
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def config_path() -> str:
 
 def read_settings(path: Optional[str] = None) -> dict:
     """The file's settings over the defaults; a missing or broken file is the defaults."""
-    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2}
+    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None, "browser_history": None, "poll_seconds": 5, "auto_update": True}
     try:
         with open(path or config_path(), encoding="utf-8") as file:
             stored = tomlkit.parse(file.read()).get(APP_NAME, {})
@@ -65,6 +65,20 @@ def write_key(key: str, device: Optional[str] = None, path: Optional[str] = None
         file.write(tomlkit.dumps(document))
 
 
+def write_exclude(entries: List[str], path: Optional[str] = None) -> None:
+    """Keeps every other setting in the file; the tray's exclusion list calls this."""
+    path = path or config_path()
+    try:
+        with open(path, encoding="utf-8") as file:
+            document = tomlkit.parse(file.read())
+    except (OSError, tomlkit.exceptions.TOMLKitError):
+        document = tomlkit.document()
+    section = document.setdefault(APP_NAME, tomlkit.table())
+    section["exclude"] = [entry.strip().lower() for entry in entries if entry.strip()]
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(tomlkit.dumps(document))
+
+
 def run_once(client, settings: dict) -> int:
     """Seconds until the next upload."""
     if not timelog.KEY_PATTERN.fullmatch(str(settings["key"])):
@@ -72,7 +86,17 @@ def run_once(client, settings: dict) -> int:
         return NO_KEY_SECONDS
     try:
         result = timelog.sync(
-            client, settings["url"], settings["key"], int(settings["days"]), None, settings["device"], False
+            client,
+            settings["url"],
+            settings["key"],
+            int(settings["days"]),
+            None,
+            settings["device"],
+            False,
+            timelog.claude_dirs_from(settings["claude_dir"]),
+            timelog.exclusions_from(settings["exclude"]),
+            settings["browser_history"],
+            address_bar.data_path(),
         )
     except Exception as error:
         logger.warning(f"Upload failed, trying again in {RETRY_SECONDS // 60} min: {error}")
@@ -81,13 +105,31 @@ def run_once(client, settings: dict) -> int:
     return max(5, int(settings["interval_minutes"])) * 60
 
 
-def loop(client, read: Callable[[], dict] = read_settings, sleep: Callable[[float], None] = time.sleep) -> None:
+# How long a request from the tray waits at most to be seen.
+TICK_SECONDS = 30
+
+
+def wait(seconds: float, sleep: Callable[[float], None], checker: Optional[updater.Checker]) -> None:
+    """Sleeps in short steps when updates are on, so the tray's «buscar actualización» is seen within a tick."""
+    if checker is None:
+        sleep(seconds)
+        return
+    checker.tick()
+    left = seconds
+    while left > 0:
+        step = min(TICK_SECONDS, left)
+        sleep(step)
+        left -= step
+        checker.tick()
+
+
+def loop(client, read: Callable[[], dict] = read_settings, sleep: Callable[[float], None] = time.sleep, checker: Optional[updater.Checker] = None) -> None:
     while True:
-        sleep(run_once(client, read()))
+        wait(run_once(client, read()), sleep, checker)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(APP_NAME, description="Uploads each day's time per app to TimeLog")
+    parser = argparse.ArgumentParser(APP_NAME, description="Uploads each day's time per app, site and Claude Code to TimeLog")
     parser.add_argument("--testing", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -99,7 +141,10 @@ def main() -> None:
     except Exception:
         # A server still down only delays the first upload: `run_once` retries on its own.
         logger.warning("ActivityWatch's server did not answer in 60 s; uploading anyway on schedule.")
-    loop(client)
+    # Reads the address bar beside the upload loop; a no-op off Windows.
+    address_bar.start(read_settings)
+    checker = updater.Checker(dirs.get_config_dir(APP_NAME), updater.bundle_root(), lambda: bool(read_settings()["auto_update"]))
+    loop(client, checker=checker)
 
 
 if __name__ == "__main__":
