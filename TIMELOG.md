@@ -40,7 +40,10 @@ It never sends an event, a URL's query, a message of Claude Code, or anything on
 2. In TimeLog, «Llaves» → «Crear llave»; copy the `tl_` key.
 3. Right-click ActivityWatch's icon next to the clock → «TimeLog: pegar llave…» → paste it.
 
-`aw-timelog` starts with ActivityWatch and uploads within a minute, then every hour. It reads
+`aw-timelog` starts with ActivityWatch and uploads within a minute, then every hour. It also updates itself:
+it checks the newest release when it starts and every six hours, downloads the setup, checks its SHA-256 and
+reinstalls in silence; ActivityWatch closes and opens again on its own. «TimeLog: buscar actualización» in the
+tray checks right away. `auto_update = false` in `aw-timelog.toml` leaves only the tray's check. It reads
 `aw-timelog.toml` in ActivityWatch's config folder before each upload: `key`, `url`, `device`
 (the computer's name by default), `interval_minutes` (60), `days` (2), `claude_dir` (Claude Code's logs), `poll_seconds` (5; 0 turns the address-bar reading off) and, only to override the automatic search, `browser_history` (a list of history files or browser data folders; under WSL, `/mnt/c/Users/<user>/AppData/Local/...`). Its log is under
 «Open log folder» in the same menu.
