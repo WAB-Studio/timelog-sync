@@ -304,7 +304,11 @@ def running_wsl_distros(output: Optional[bytes] = None) -> List[str]:
         try:
             import subprocess
 
-            output = subprocess.run(["wsl.exe", "-l", "--running", "-q"], capture_output=True, timeout=10, check=True).stdout
+            # The tray app has no console: without the flag, each hourly upload would flash one.
+            hidden = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            output = subprocess.run(
+                ["wsl.exe", "-l", "--running", "-q"], capture_output=True, timeout=10, check=True, creationflags=hidden
+            ).stdout
         except Exception:
             return []
     text = output.decode("utf-16-le", errors="replace") if b"\x00" in output else output.decode("utf-8", errors="replace")
