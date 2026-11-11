@@ -35,6 +35,9 @@ DEFAULT_QUERY = (
     " OR daviplata.com)"
 )
 HOMEFUND_KEY_PATTERN = re.compile(r"whk_[A-Za-z0-9_-]{16,}")
+# HomeFund's Ajustes shows «<client_id> <client_secret>» on one line.
+CLIENT_ID_SUFFIX = ".apps.googleusercontent.com"
+CLIENT_SECRET_PREFIX = "GOCSPX-"
 FOLDER = "gmail"
 # The tray leaves this file; aw-timelog sees it within a tick and opens the browser.
 CONNECT_REQUEST = "aw-timelog-gmail-connect-request"
@@ -66,6 +69,14 @@ def _json(status: int, raw: bytes, what: str) -> dict:
     if status != 200:
         raise RuntimeError(f"{what}: HTTP {status}")
     return json.loads(raw.decode("utf-8"))
+
+
+def parse_client(line: str) -> Optional[Tuple[str, str]]:
+    """The id and secret of a pasted «<client_id> <client_secret>» line; None when it is not one."""
+    parts = line.split()
+    if len(parts) != 2 or not parts[0].endswith(CLIENT_ID_SUFFIX) or not parts[1].startswith(CLIENT_SECRET_PREFIX):
+        return None
+    return parts[0], parts[1]
 
 
 def gmail_dir(config_dir: str) -> str:
@@ -230,7 +241,7 @@ def run_round(config_dir: str, settings: dict, now: Optional[float] = None) -> i
 def connect_account(config_dir: str, client_id: str, client_secret: str, open_browser: Callable[[str], object] = webbrowser.open, wait_seconds: float = CONNECT_WAIT_SECONDS) -> str:
     """Google's loopback flow; saves `gmail/<address>.json` and returns the address."""
     if not client_id or not client_secret:
-        raise RuntimeError("Set gmail_client_id and gmail_client_secret in aw-timelog.toml first.")
+        raise RuntimeError("No Gmail client: use «Gmail: conectar cuenta…» in the tray to paste it, or set gmail_client_id and gmail_client_secret in aw-timelog.toml.")
     expected = secrets.token_urlsafe(16)
     result: Dict[str, str] = {}
 
@@ -316,7 +327,7 @@ class Inbox:
             self.connecting = True
             threading.Thread(target=self._connect, args=(dict(settings),), daemon=True).start()
         minutes = int(settings["gmail_minutes"])
-        if minutes <= 0:
+        if minutes <= 0 or not settings["gmail_enabled"]:
             return
         if self.last is not None and self.clock() - self.last < minutes * 60:
             return

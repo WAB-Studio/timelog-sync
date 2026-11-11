@@ -114,3 +114,13 @@ def test_start_never_raises(monkeypatch):
         raise ValueError("boom")
 
     assert ab.start(bad) is None
+
+
+def test_a_disabled_poller_reads_nothing():
+    import threading
+
+    stop = threading.Event()
+    reads = []
+    poller = ab.Poller(lambda: reads.append(1), None, lambda: [], 0.01, enabled=lambda: stop.set() or False)
+    poller.run(stop)
+    assert reads == []

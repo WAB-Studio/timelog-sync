@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from aw_client import gmail_inbox, timelog_module
+from aw_client import gmail_inbox, timelog, timelog_module
 
 HOMEFUND_KEY = "whk_" + "a" * 32
 NOW = 1_800_000_000
@@ -218,3 +218,43 @@ def test_write_homefund_key_keeps_the_other_settings_and_refuses_a_wrong_key(tmp
     assert timelog_module.write_homefund_key(f" {HOMEFUND_KEY} ", str(path))
     settings = timelog_module.read_settings(str(path))
     assert settings["homefund_key"] == HOMEFUND_KEY and settings["interval_minutes"] == 15
+
+
+CLIENT_ID = "123-abc.apps.googleusercontent.com"
+CLIENT_SECRET = "GOCSPX-abc_DEF-123"
+
+
+def test_write_gmail_client_keeps_the_other_settings_and_refuses_a_wrong_line(tmp_path):
+    path = tmp_path / "aw-timelog.toml"
+    path.write_text("[aw-timelog]\ninterval_minutes = 15\n", encoding="utf-8")
+    for wrong in ("", CLIENT_ID, f"{CLIENT_SECRET} {CLIENT_ID}", f"{CLIENT_ID} {CLIENT_SECRET} x", f"x.com {CLIENT_SECRET}", f"{CLIENT_ID} abc"):
+        assert not timelog_module.write_gmail_client(wrong, str(path))
+    assert "gmail_client" not in path.read_text(encoding="utf-8")
+    assert timelog_module.write_gmail_client(f"  {CLIENT_ID} {CLIENT_SECRET}\n", str(path))
+    settings = timelog_module.read_settings(str(path))
+    assert (settings["gmail_client_id"], settings["gmail_client_secret"], settings["interval_minutes"]) == (CLIENT_ID, CLIENT_SECRET, 15)
+
+
+def test_gmail_off_runs_no_round_and_timelog_off_uploads_nothing(setup, monkeypatch, tmp_path):
+    tmp, account, settings = setup
+    monkeypatch.setattr(gmail_inbox, "_http", lambda *a, **k: (_ for _ in ()).throw(AssertionError("network")))
+    inbox = gmail_inbox.Inbox(str(tmp))
+    inbox.tick({**settings, "gmail_enabled": False})
+    assert inbox.thread is None
+    monkeypatch.setattr(timelog, "sync", lambda *args: (_ for _ in ()).throw(AssertionError("sent")))
+    off = {**settings, "timelog_enabled": False, "key": "tl_" + "a" * 43}
+    assert timelog_module.run_once(None, off) == timelog_module.NO_KEY_SECONDS
+
+
+def test_both_switches_default_on_and_the_tray_writes_them(tmp_path):
+    path = tmp_path / "aw-timelog.toml"
+    path.write_text("[aw-timelog]\ninterval_minutes = 15\n", encoding="utf-8")
+    settings = timelog_module.read_settings(str(path))
+    assert settings["timelog_enabled"] is True and settings["gmail_enabled"] is True
+    timelog_module.write_enabled("timelog_enabled", False, str(path))
+    settings = timelog_module.read_settings(str(path))
+    assert settings["timelog_enabled"] is False and settings["gmail_enabled"] is True and settings["interval_minutes"] == 15
+    timelog_module.write_enabled("timelog_enabled", True, str(path))
+    assert timelog_module.read_settings(str(path))["timelog_enabled"] is True
+    with pytest.raises(ValueError):
+        timelog_module.write_enabled("key", True, str(path))

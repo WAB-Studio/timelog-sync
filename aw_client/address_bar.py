@@ -129,9 +129,10 @@ class Poller:
         exclude: Callable[[], Sequence[str]],
         poll_seconds: float = 5,
         clock: Callable[[], float] = time.time,
+        enabled: Callable[[], bool] = lambda: True,
     ):
         self.reader, self.store, self.exclude, self.poll = reader, store, exclude, max(1.0, float(poll_seconds))
-        self.clock = clock
+        self.clock, self.enabled = clock, enabled
         self._last: Optional[float] = None
         self._failed = False
 
@@ -162,7 +163,8 @@ class Poller:
 
     def run(self, stop: threading.Event) -> None:
         while not stop.wait(self.poll):
-            self.tick()
+            if self.enabled():
+                self.tick()
 
 
 def windows_reader() -> Optional[Callable[[], Optional[Reading]]]:
@@ -259,7 +261,7 @@ def start(read_settings: Callable[[], dict], reader: Optional[Callable[[], Optio
                 use = reader or windows_reader()
                 if use is None:
                     return
-                Poller(use, poller_store, lambda: timelog.exclusions_from(read_settings().get("exclude")), seconds).run(stop)
+                Poller(use, poller_store, lambda: timelog.exclusions_from(read_settings().get("exclude")), seconds, enabled=lambda: bool(read_settings().get("timelog_enabled", True))).run(stop)
             except Exception as error:
                 logger.warning(f"Address bar reading is off: {error}")
             finally:

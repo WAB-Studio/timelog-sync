@@ -31,13 +31,17 @@ RETRY_SECONDS = 300
 NO_KEY_SECONDS = 30
 
 
+# The no-key notice is logged once per run, not every 30 seconds.
+_warned_no_key: List[bool] = []
+
+
 def config_path() -> str:
     return os.path.join(dirs.get_config_dir(APP_NAME), f"{APP_NAME}.toml")
 
 
 def read_settings(path: Optional[str] = None) -> dict:
     """The file's settings over the defaults; a missing or broken file is the defaults."""
-    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None, "browser_history": None, "poll_seconds": 5, "auto_update": True, "gmail_minutes": 10, "gmail_query": gmail_inbox.DEFAULT_QUERY, "gmail_client_id": "", "gmail_client_secret": "", "homefund_url": gmail_inbox.DEFAULT_HOMEFUND_URL, "homefund_key": ""}
+    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None, "browser_history": None, "poll_seconds": 5, "auto_update": True, "timelog_enabled": True, "gmail_enabled": True, "gmail_minutes": 10, "gmail_query": gmail_inbox.DEFAULT_QUERY, "gmail_client_id": "", "gmail_client_secret": "", "homefund_url": gmail_inbox.DEFAULT_HOMEFUND_URL, "homefund_key": ""}
     try:
         with open(path or config_path(), encoding="utf-8") as file:
             stored = tomlkit.parse(file.read()).get(APP_NAME, {})
@@ -96,10 +100,47 @@ def write_homefund_key(key: str, path: Optional[str] = None) -> bool:
     return True
 
 
+def write_gmail_client(line: str, path: Optional[str] = None) -> bool:
+    """False for anything but «<client_id> <client_secret>»; the file is left as it was. The tray calls this."""
+    client = gmail_inbox.parse_client(line)
+    if client is None:
+        return False
+    path = path or config_path()
+    try:
+        with open(path, encoding="utf-8") as file:
+            document = tomlkit.parse(file.read())
+    except (OSError, tomlkit.exceptions.TOMLKitError):
+        document = tomlkit.document()
+    section = document.setdefault(APP_NAME, tomlkit.table())
+    section["gmail_client_id"], section["gmail_client_secret"] = client
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(tomlkit.dumps(document))
+    return True
+
+
+def write_enabled(name: str, enabled: bool, path: Optional[str] = None) -> None:
+    """`timelog_enabled` or `gmail_enabled`, keeping every other setting; the tray's checkable entries call this."""
+    if name not in ("timelog_enabled", "gmail_enabled"):
+        raise ValueError(name)
+    path = path or config_path()
+    try:
+        with open(path, encoding="utf-8") as file:
+            document = tomlkit.parse(file.read())
+    except (OSError, tomlkit.exceptions.TOMLKitError):
+        document = tomlkit.document()
+    document.setdefault(APP_NAME, tomlkit.table())[name] = bool(enabled)
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(tomlkit.dumps(document))
+
+
 def run_once(client, settings: dict) -> int:
-    """Seconds until the next upload."""
+    """Seconds until the next upload; with TimeLog off, until the tray may have turned it on."""
+    if not settings["timelog_enabled"]:
+        return NO_KEY_SECONDS
     if not timelog.KEY_PATTERN.fullmatch(str(settings["key"])):
-        logger.info("No TimeLog key yet: paste one from the tray, under «TimeLog…».")
+        if not _warned_no_key:
+            _warned_no_key.append(True)
+            logger.info("No TimeLog key yet: paste one from the tray, under «TimeLog…», or turn TimeLog off there.")
         return NO_KEY_SECONDS
     try:
         result = timelog.sync(

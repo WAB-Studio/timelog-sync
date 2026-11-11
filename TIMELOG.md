@@ -45,18 +45,28 @@ it checks the newest release when it starts and every six hours, downloads the s
 reinstalls in silence; ActivityWatch closes and opens again on its own. «TimeLog: buscar actualización» in the
 tray checks right away. `auto_update = false` in `aw-timelog.toml` leaves only the tray's check. It reads
 `aw-timelog.toml` in ActivityWatch's config folder before each upload: `key`, `url`, `device`
-(the computer's name by default), `interval_minutes` (60), `days` (2), `claude_dir` (Claude Code's logs), `poll_seconds` (5; 0 turns the address-bar reading off), the Gmail settings below and, only to override the automatic search, `browser_history` (a list of history files or browser data folders; under WSL, `/mnt/c/Users/<user>/AppData/Local/...`). Its log is under
+(the computer's name by default), `interval_minutes` (60), `days` (2), `claude_dir` (Claude Code's logs), `poll_seconds` (5; 0 turns the address-bar reading off), `timelog_enabled` and `gmail_enabled` (both true; see below), the Gmail settings below and, only to override the automatic search, `browser_history` (a list of history files or browser data folders; under WSL, `/mnt/c/Users/<user>/AppData/Local/...`). Its log is under
 «Open log folder» in the same menu.
+
+## TimeLog and Gmail, each on or off
+
+The program does two jobs and each is optional. Tray: «TimeLog: subir mi tiempo» and «Gmail: reenviar correos del banco»
+are checkable entries that write `timelog_enabled` and `gmail_enabled` (both default to true) in `aw-timelog.toml`;
+they are read again every round, so no restart is needed. With TimeLog off nothing is uploaded and the address bar
+is not read; no `tl_` key is needed. With Gmail off no round runs. The auto-updater runs either way.
+A member who wants only the bank emails turns TimeLog off.
 
 ## Bank emails to HomeFund (Gmail)
 
 The same program forwards the bank notification emails of a Gmail account to HomeFund, which turns each into a
 movement. Off until an account is connected and a HomeFund key is pasted.
 
-1. In Google Cloud, create an OAuth client of type «Desktop app» with the Gmail API on, and put its id and secret in
-   `aw-timelog.toml` as `gmail_client_id` and `gmail_client_secret`. They never go in the repository.
+1. Tray → «Gmail: conectar cuenta…». The first time it asks for one line, `<client_id> <client_secret>`, which you copy
+   from HomeFund → Ajustes → «Correos del banco»; it is saved in `aw-timelog.toml` as `gmail_client_id` and
+   `gmail_client_secret`. A self-hoster can create their own OAuth client in Google Cloud («Desktop app», Gmail API on)
+   and put both in the toml; the dialog is skipped while both are set. They never go in the repository.
 2. In HomeFund, create a webhook key (`whk_…`). Tray → «HomeFund: pegar llave…» (or `homefund_key` in the toml).
-3. Tray → «Gmail: conectar cuenta…». The browser opens Google's consent page; accept. The account's token is saved
+3. The browser opens Google's consent page; accept. The account's token is saved
    as `gmail/<address>.json` in the config folder. Repeat for each account.
 
 Settings in `aw-timelog.toml`: `gmail_minutes` (10; 0 turns Gmail off), `gmail_query` (the banks: Bancolombia, Nequi,
