@@ -70,3 +70,20 @@ def test_write_exclude_keeps_the_other_settings_and_is_read_back(tmp_path):
     assert settings["interval_minutes"] == 15
     assert timelog.exclusions_from(settings["exclude"]) == ["mybank.com", "foo.exe"]
     assert timelog.exclusions_from(timelog_module.read_settings("/nonexistent")["exclude"]) == timelog.DEFAULT_EXCLUDE
+
+
+def test_the_loop_records_the_last_upload_and_its_outcome(monkeypatch, tmp_path):
+    settings = {**timelog_module.read_settings("/nonexistent"), "key": KEY}
+    assert timelog_module.read_status(str(tmp_path)) is None
+    monkeypatch.setattr(timelog, "sync", lambda *args: {"written": 3, "days": 2})
+    timelog_module.run_once(None, settings)
+    status = timelog_module.read_status(str(tmp_path))
+    assert status["ok"] is True and isinstance(status["at"], int)
+
+    def fail(*args):
+        raise RuntimeError("ActivityWatch is not answering")
+
+    monkeypatch.setattr(timelog, "sync", fail)
+    timelog_module.run_once(None, settings)
+    status = timelog_module.read_status(str(tmp_path))
+    assert status["ok"] is False and "not answering" in status["detail"]

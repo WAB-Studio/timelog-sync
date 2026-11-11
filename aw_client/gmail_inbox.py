@@ -25,6 +25,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GMAIL_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
 SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -98,6 +99,69 @@ def _write_json(path: str, value: dict) -> None:
     with open(temporary, "w", encoding="utf-8") as file:
         json.dump(value, file)
     os.replace(temporary, path)
+
+
+def _today(now: float) -> str:
+    return time.strftime("%Y-%m-%d", time.localtime(now))
+
+
+def _record(state: dict, now: float, sent: int, error: str) -> None:
+    """The window's numbers: last check, last error, and emails sent today and in total."""
+    today = _today(now)
+    day = state.get("sent_day")
+    before = day.get("count", 0) if isinstance(day, dict) and day.get("date") == today else 0
+    state["checked"] = int(now)
+    state["error"] = error
+    state["sent_total"] = int(state.get("sent_total", 0)) + sent
+    state["sent_day"] = {"date": today, "count": before + sent}
+
+
+def record_error(path: str, error: str, now: float) -> None:
+    """Keeps an account's last failure for the tray's window; an account not yet started has no state to keep it in."""
+    state_path = path[: -len(".json")] + ".state"
+    state = _read_json(state_path)
+    if state is None:
+        return
+    _record(state, now, 0, error[:300])
+    _write_json(state_path, state)
+
+
+def account_status(path: str, now: Optional[float] = None) -> dict:
+    """What the tray's window shows for one account: address, last check, today's and total sent, last error."""
+    now = time.time() if now is None else now
+    state = _read_json(path[: -len(".json")] + ".state") or {}
+    day = state.get("sent_day")
+    return {
+        "address": os.path.basename(path)[: -len(".json")],
+        "checked": state.get("checked"),
+        "error": str(state.get("error") or ""),
+        "sent_today": int(day.get("count", 0)) if isinstance(day, dict) and day.get("date") == _today(now) else 0,
+        "sent_total": int(state.get("sent_total", 0)),
+    }
+
+
+def revoke_token(refresh_token: str) -> bool:
+    """Asks Google to cancel the token; best effort, False when it could not."""
+    try:
+        status, _ = _http("POST", REVOKE_URL, {"Content-Type": "application/x-www-form-urlencoded"}, urllib.parse.urlencode({"token": refresh_token}).encode())
+    except Retry:
+        return False
+    return status == 200
+
+
+def remove_account(path: str, revoke: Callable[[str], bool] = revoke_token) -> None:
+    """Revokes the token (best effort), then deletes the account's token and state files."""
+    account = _read_json(path) or {}
+    if account.get("refresh-token"):
+        try:
+            revoke(str(account["refresh-token"]))
+        except Exception as error:
+            logger.warning(f"Could not revoke the token of {os.path.basename(path)}: {error}")
+    for name in (path, path[: -len(".json")] + ".state"):
+        try:
+            os.remove(name)
+        except OSError:
+            pass
 
 
 def list_accounts(config_dir: str) -> List[str]:
@@ -191,12 +255,15 @@ def poll_account(path: str, settings: dict, now: float) -> int:
     state = _read_json(state_path)
     if state is None:
         # First run of an account: from now on, never backfill.
-        _write_json(state_path, {"after": int(now), "sent": []})
+        state = {"after": int(now), "sent": []}
+        _record(state, now, 0, "")
+        _write_json(state_path, state)
         return 0
     after = int(state.get("after", now))
     sent = [str(i) for i in state.get("sent", [])]
     token = access_token(account)
     clean = True
+    error = ""
     count = 0
     for message_id in list_message_ids(token, settings["gmail_query"], after):
         if message_id in sent:
@@ -207,13 +274,16 @@ def poll_account(path: str, settings: dict, now: float) -> int:
         except Retry as error:
             logger.warning(f"HomeFund did not take a bank email, trying again next round: {error}")
             clean = False
+            error = str(error)
             continue
         sent.append(message_id)
         count += outcome == "sent"
     # A message left over for the next round keeps `after` where it was.
     if clean:
         after = max(after, int(now) - OVERLAP_SECONDS)
-    _write_json(state_path, {"after": after, "sent": sent[-SENT_KEPT:]})
+    state.update({"after": after, "sent": sent[-SENT_KEPT:]})
+    _record(state, now, count, error)
+    _write_json(state_path, state)
     return count
 
 
@@ -223,7 +293,7 @@ def run_round(config_dir: str, settings: dict, now: Optional[float] = None) -> i
     if not HOMEFUND_KEY_PATTERN.fullmatch(str(settings.get("homefund_key", ""))):
         accounts = list_accounts(config_dir)
         if accounts:
-            logger.info("No HomeFund key yet: paste one from the tray, under «HomeFund…».")
+            logger.info("No HomeFund key yet: paste one from the tray, in «TimeLog y correos…».")
         return 0
     total = 0
     for path in list_accounts(config_dir):
@@ -231,8 +301,10 @@ def run_round(config_dir: str, settings: dict, now: Optional[float] = None) -> i
             total += poll_account(path, settings, now)
         except Retry as error:
             logger.warning(f"Gmail {os.path.basename(path)}: {error}; trying again next round.")
+            record_error(path, str(error), now)
         except Exception as error:
             logger.error(f"Gmail {os.path.basename(path)}: {type(error).__name__}: {error}")
+            record_error(path, f"{type(error).__name__}: {error}", now)
     if total:
         logger.info(f"Forwarded {total} bank emails to HomeFund.")
     return total
@@ -241,7 +313,7 @@ def run_round(config_dir: str, settings: dict, now: Optional[float] = None) -> i
 def connect_account(config_dir: str, client_id: str, client_secret: str, open_browser: Callable[[str], object] = webbrowser.open, wait_seconds: float = CONNECT_WAIT_SECONDS) -> str:
     """Google's loopback flow; saves `gmail/<address>.json` and returns the address."""
     if not client_id or not client_secret:
-        raise RuntimeError("No Gmail client: use «Gmail: conectar cuenta…» in the tray to paste it, or set gmail_client_id and gmail_client_secret in aw-timelog.toml.")
+        raise RuntimeError("No Gmail client: use «Conectar otra cuenta…» in the tray window to paste it, or set gmail_client_id and gmail_client_secret in aw-timelog.toml.")
     expected = secrets.token_urlsafe(16)
     result: Dict[str, str] = {}
 

@@ -7,6 +7,7 @@ pasted in the tray takes effect without a restart.
 """
 
 import argparse
+import json
 import logging
 import os
 import socket
@@ -133,6 +134,28 @@ def write_enabled(name: str, enabled: bool, path: Optional[str] = None) -> None:
         file.write(tomlkit.dumps(document))
 
 
+# The tray's window reads this to show the last upload; the loop is the only writer.
+STATUS_FILE = "aw-timelog-status.json"
+
+
+def write_status(ok: bool, detail: str, now: Optional[float] = None, folder: Optional[str] = None) -> None:
+    path = os.path.join(folder or dirs.get_config_dir(APP_NAME), STATUS_FILE)
+    try:
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump({"at": int(time.time() if now is None else now), "ok": bool(ok), "detail": detail[:300]}, file)
+    except OSError as error:
+        logger.warning(f"Could not write {STATUS_FILE}: {error}")
+
+
+def read_status(folder: Optional[str] = None) -> Optional[dict]:
+    try:
+        with open(os.path.join(folder or dirs.get_config_dir(APP_NAME), STATUS_FILE), encoding="utf-8") as file:
+            value = json.load(file)
+        return value if isinstance(value, dict) and isinstance(value.get("at"), int) else None
+    except (OSError, ValueError):
+        return None
+
+
 def run_once(client, settings: dict) -> int:
     """Seconds until the next upload; with TimeLog off, until the tray may have turned it on."""
     if not settings["timelog_enabled"]:
@@ -140,7 +163,7 @@ def run_once(client, settings: dict) -> int:
     if not timelog.KEY_PATTERN.fullmatch(str(settings["key"])):
         if not _warned_no_key:
             _warned_no_key.append(True)
-            logger.info("No TimeLog key yet: paste one from the tray, under «TimeLog…», or turn TimeLog off there.")
+            logger.info("No TimeLog key yet: paste one from the tray, in «TimeLog y correos…», or turn TimeLog off there.")
         return NO_KEY_SECONDS
     try:
         result = timelog.sync(
@@ -158,8 +181,10 @@ def run_once(client, settings: dict) -> int:
         )
     except Exception as error:
         logger.warning(f"Upload failed, trying again in {RETRY_SECONDS // 60} min: {error}")
+        write_status(False, str(error))
         return RETRY_SECONDS
     logger.info(f"Uploaded {result.get('written')} rows over {result.get('days')} days.")
+    write_status(True, f"{result.get('written')} rows over {result.get('days')} days")
     return max(5, int(settings["interval_minutes"])) * 60
 
 

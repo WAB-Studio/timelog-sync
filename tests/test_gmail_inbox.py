@@ -258,3 +258,57 @@ def test_both_switches_default_on_and_the_tray_writes_them(tmp_path):
     assert timelog_module.read_settings(str(path))["timelog_enabled"] is True
     with pytest.raises(ValueError):
         timelog_module.write_enabled("key", True, str(path))
+
+
+def test_an_account_counts_what_it_sent_today_and_in_total(setup, monkeypatch):
+    tmp, account, settings = setup
+    gmail_inbox.run_round(str(tmp), settings, NOW)
+    monkeypatch.setattr(gmail_inbox, "_http", Fake(ids=["m1", "m2"]))
+    gmail_inbox.run_round(str(tmp), settings, NOW + 600)
+    monkeypatch.setattr(gmail_inbox, "_http", Fake(ids=["m1", "m2", "m3"]))
+    gmail_inbox.run_round(str(tmp), settings, NOW + 1200)
+    status = gmail_inbox.account_status(account, NOW + 1200)
+    assert status["address"] == "me@gmail.com"
+    assert (status["sent_today"], status["sent_total"]) == (3, 3)
+    assert status["checked"] == NOW + 1200
+    assert status["error"] == ""
+    # The next day today's count starts over; the total does not.
+    later = gmail_inbox.account_status(account, NOW + 3 * 86400)
+    assert (later["sent_today"], later["sent_total"]) == (0, 3)
+
+
+def test_the_last_error_is_kept_until_a_round_goes_well(setup, monkeypatch):
+    tmp, account, settings = setup
+    gmail_inbox.run_round(str(tmp), settings, NOW)
+
+    def down(*args, **kwargs):
+        raise gmail_inbox.Retry("sin red")
+
+    monkeypatch.setattr(gmail_inbox, "_http", down)
+    gmail_inbox.run_round(str(tmp), settings, NOW + 600)
+    status = gmail_inbox.account_status(account, NOW + 600)
+    assert status["error"] == "sin red"
+    assert status["checked"] == NOW + 600
+    monkeypatch.setattr(gmail_inbox, "_http", Fake(ids=[]))
+    gmail_inbox.run_round(str(tmp), settings, NOW + 1200)
+    assert gmail_inbox.account_status(account, NOW + 1200)["error"] == ""
+
+
+def test_removing_an_account_revokes_the_token_and_deletes_both_files(setup):
+    tmp, account, settings = setup
+    gmail_inbox.run_round(str(tmp), settings, NOW)
+    revoked = []
+    gmail_inbox.remove_account(account, revoked.append)
+    assert revoked == ["r"]
+    assert not os.path.exists(account) and not os.path.exists(account[:-5] + ".state")
+    assert gmail_inbox.list_accounts(str(tmp)) == []
+
+
+def test_removing_an_account_still_deletes_when_the_revoke_fails(setup):
+    tmp, account, settings = setup
+
+    def boom(token):
+        raise OSError("offline")
+
+    gmail_inbox.remove_account(account, boom)
+    assert not os.path.exists(account)
