@@ -19,7 +19,7 @@ from aw_core.log import setup_logging
 
 import aw_client
 
-from . import address_bar, timelog, updater
+from . import address_bar, gmail_inbox, timelog, updater
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def config_path() -> str:
 
 def read_settings(path: Optional[str] = None) -> dict:
     """The file's settings over the defaults; a missing or broken file is the defaults."""
-    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None, "browser_history": None, "poll_seconds": 5, "auto_update": True}
+    settings = {"url": DEFAULT_URL, "key": "", "device": socket.gethostname(), "interval_minutes": 60, "days": 2, "claude_dir": "", "exclude": None, "browser_history": None, "poll_seconds": 5, "auto_update": True, "gmail_minutes": 10, "gmail_query": gmail_inbox.DEFAULT_QUERY, "gmail_client_id": "", "gmail_client_secret": "", "homefund_url": gmail_inbox.DEFAULT_HOMEFUND_URL, "homefund_key": ""}
     try:
         with open(path or config_path(), encoding="utf-8") as file:
             stored = tomlkit.parse(file.read()).get(APP_NAME, {})
@@ -79,6 +79,23 @@ def write_exclude(entries: List[str], path: Optional[str] = None) -> None:
         file.write(tomlkit.dumps(document))
 
 
+def write_homefund_key(key: str, path: Optional[str] = None) -> bool:
+    """False for anything HomeFund would not have minted; the file is left as it was. The tray calls this."""
+    key = key.strip()
+    if not gmail_inbox.HOMEFUND_KEY_PATTERN.fullmatch(key):
+        return False
+    path = path or config_path()
+    try:
+        with open(path, encoding="utf-8") as file:
+            document = tomlkit.parse(file.read())
+    except (OSError, tomlkit.exceptions.TOMLKitError):
+        document = tomlkit.document()
+    document.setdefault(APP_NAME, tomlkit.table())["homefund_key"] = key
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(tomlkit.dumps(document))
+    return True
+
+
 def run_once(client, settings: dict) -> int:
     """Seconds until the next upload."""
     if not timelog.KEY_PATTERN.fullmatch(str(settings["key"])):
@@ -109,23 +126,30 @@ def run_once(client, settings: dict) -> int:
 TICK_SECONDS = 30
 
 
-def wait(seconds: float, sleep: Callable[[float], None], checker: Optional[updater.Checker]) -> None:
-    """Sleeps in short steps when updates are on, so the tray's «buscar actualización» is seen within a tick."""
-    if checker is None:
+def wait(seconds: float, sleep: Callable[[float], None], checker: Optional[updater.Checker], inbox: Optional[gmail_inbox.Inbox] = None, read: Callable[[], dict] = read_settings) -> None:
+    """Sleeps in short steps when updates or Gmail are on, so the tray's requests are seen within a tick."""
+    if checker is None and inbox is None:
         sleep(seconds)
         return
-    checker.tick()
+
+    def tick() -> None:
+        if checker is not None:
+            checker.tick()
+        if inbox is not None:
+            inbox.tick(read())
+
+    tick()
     left = seconds
     while left > 0:
         step = min(TICK_SECONDS, left)
         sleep(step)
         left -= step
-        checker.tick()
+        tick()
 
 
-def loop(client, read: Callable[[], dict] = read_settings, sleep: Callable[[float], None] = time.sleep, checker: Optional[updater.Checker] = None) -> None:
+def loop(client, read: Callable[[], dict] = read_settings, sleep: Callable[[float], None] = time.sleep, checker: Optional[updater.Checker] = None, inbox: Optional[gmail_inbox.Inbox] = None) -> None:
     while True:
-        wait(run_once(client, read()), sleep, checker)
+        wait(run_once(client, read()), sleep, checker, inbox, read)
 
 
 def main() -> None:
@@ -144,7 +168,7 @@ def main() -> None:
     # Reads the address bar beside the upload loop; a no-op off Windows.
     address_bar.start(read_settings)
     checker = updater.Checker(dirs.get_config_dir(APP_NAME), updater.bundle_root(), lambda: bool(read_settings()["auto_update"]))
-    loop(client, checker=checker)
+    loop(client, checker=checker, inbox=gmail_inbox.Inbox(dirs.get_config_dir(APP_NAME)))
 
 
 if __name__ == "__main__":

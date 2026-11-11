@@ -45,8 +45,32 @@ it checks the newest release when it starts and every six hours, downloads the s
 reinstalls in silence; ActivityWatch closes and opens again on its own. «TimeLog: buscar actualización» in the
 tray checks right away. `auto_update = false` in `aw-timelog.toml` leaves only the tray's check. It reads
 `aw-timelog.toml` in ActivityWatch's config folder before each upload: `key`, `url`, `device`
-(the computer's name by default), `interval_minutes` (60), `days` (2), `claude_dir` (Claude Code's logs), `poll_seconds` (5; 0 turns the address-bar reading off) and, only to override the automatic search, `browser_history` (a list of history files or browser data folders; under WSL, `/mnt/c/Users/<user>/AppData/Local/...`). Its log is under
+(the computer's name by default), `interval_minutes` (60), `days` (2), `claude_dir` (Claude Code's logs), `poll_seconds` (5; 0 turns the address-bar reading off), the Gmail settings below and, only to override the automatic search, `browser_history` (a list of history files or browser data folders; under WSL, `/mnt/c/Users/<user>/AppData/Local/...`). Its log is under
 «Open log folder» in the same menu.
+
+## Bank emails to HomeFund (Gmail)
+
+The same program forwards the bank notification emails of a Gmail account to HomeFund, which turns each into a
+movement. Off until an account is connected and a HomeFund key is pasted.
+
+1. In Google Cloud, create an OAuth client of type «Desktop app» with the Gmail API on, and put its id and secret in
+   `aw-timelog.toml` as `gmail_client_id` and `gmail_client_secret`. They never go in the repository.
+2. In HomeFund, create a webhook key (`whk_…`). Tray → «HomeFund: pegar llave…» (or `homefund_key` in the toml).
+3. Tray → «Gmail: conectar cuenta…». The browser opens Google's consent page; accept. The account's token is saved
+   as `gmail/<address>.json` in the config folder. Repeat for each account.
+
+Settings in `aw-timelog.toml`: `gmail_minutes` (10; 0 turns Gmail off), `gmail_query` (the banks: Bancolombia, Nequi,
+Lulo, Nu, Falabella, Banco de Bogotá, ACH, Davivienda, BBVA, Daviplata; the value replaces it), `gmail_client_id`,
+`gmail_client_secret`, `homefund_url` (https://our-piggy-bank.vercel.app), `homefund_key`.
+
+Each round, per account: refresh the access token, list `gmail_query after:<time>`, read each new message and POST
+`{subject, text, html}` to `<homefund_url>/api/webhooks/email`. HomeFund does not dedupe, so `gmail/<address>.state`
+keeps the last time and the ids already sent: each email goes once. A first run starts from now and never
+backfills. A 5xx or no network is tried again next round; a 401 or 422 is logged and that email is skipped.
+Gmail runs in its own thread: a failure there never touches the TimeLog upload.
+
+Privacy: access is read-only (`gmail.readonly`). Only the subject and body of emails matching `gmail_query` leave
+the PC, and only to `homefund_url`. Tokens and the client secret stay in the config folder.
 
 ## On Windows, by hand
 
