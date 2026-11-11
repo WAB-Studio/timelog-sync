@@ -396,7 +396,13 @@ def read_claude_sessions(folders: Sequence[str], since: datetime) -> Optional[Li
                     continue
                 if stamps:
                     sessions.setdefault(_session_of(folder, path), []).extend(stamps)
-    return [ClaudeSession(project, session, sorted(stamps)) for (project, session), stamps in sessions.items()]
+    # The desktop app keeps its own copy of a session it ran over SSH under `ssh-<id>`, so one session can sit in two
+    # folders (Windows and WSL); TimeLog takes a session id once per day.
+    by_id: Dict[str, Tuple[str, set]] = {}
+    for (project, session), stamps in sorted(sessions.items(), key=lambda item: (item[0][0] == "ssh-" + item[0][1], item[0])):
+        kept = by_id.setdefault(session, (project, set()))
+        kept[1].update(stamps)
+    return [ClaudeSession(project, session, sorted(stamps)) for session, (project, stamps) in by_id.items()]
 
 
 def claude_session_rows(sessions: Iterable[ClaudeSession], days: List[date]) -> Dict[date, List[Dict[str, object]]]:
@@ -461,6 +467,9 @@ def upload(url: str, key: str, body: dict, timeout: float = 30) -> dict:
     )
     if response.status_code == 401:
         raise RuntimeError("TimeLog refused the key: create one in «Llaves».")
+    if response.status_code == 400:
+        # The server names each field it refused; without them a refused day cannot be told apart from another.
+        raise RuntimeError(f"TimeLog refused the upload: {response.text[:1000]}")
     response.raise_for_status()
     return response.json()
 

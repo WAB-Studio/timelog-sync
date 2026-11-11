@@ -348,3 +348,22 @@ def test_wsl_claude_dirs_keep_existing_home_and_root_folders_of_the_given_distro
     found = timelog.wsl_claude_dirs(["Ubuntu", "Other", "Gone"], share=lambda distro: str(tmp_path / distro))
     assert found == [str(tmp_path / "Ubuntu/home/cxrkeyb/.claude/projects"), str(tmp_path / "Ubuntu/root/.claude/projects")]
     assert timelog.wsl_claude_dirs([], share=lambda distro: str(tmp_path / distro)) == []
+
+
+def test_a_session_in_two_folders_is_one_session_under_its_real_project(tmp_path):
+    windows, wsl = tmp_path / "windows", tmp_path / "wsl"
+    (windows / "ssh-s1").mkdir(parents=True)
+    (wsl / "-home-me-asistente").mkdir(parents=True)
+    lines = lambda *times: "\n".join(json.dumps({"timestamp": t}) for t in times) + "\n"
+    (windows / "ssh-s1" / "s1.jsonl").write_text(lines("2026-10-30T14:00:00Z", "2026-10-30T14:01:00Z"), encoding="utf-8")
+    (wsl / "-home-me-asistente" / "s1.jsonl").write_text(lines("2026-10-30T14:01:00Z", "2026-10-30T14:02:00Z"), encoding="utf-8")
+    sessions = timelog.read_claude_sessions([str(windows), str(wsl)], datetime(2026, 10, 1, tzinfo=timezone.utc))
+    assert sessions == [
+        timelog.ClaudeSession(
+            "-home-me-asistente",
+            "s1",
+            [datetime(2026, 10, 30, 14, minute, tzinfo=timezone.utc) for minute in (0, 1, 2)],
+        )
+    ]
+    rows = timelog.claude_session_rows(sessions, [DAY])[DAY]
+    assert [(row["session"], row["project"], row["seconds"]) for row in rows] == [("s1", "-home-me-asistente", 120)]
