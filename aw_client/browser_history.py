@@ -25,6 +25,8 @@ DASH = r"\s[-–—]\s"
 SUFFIX = re.compile(rf"{DASH}(?:{BROWSER_NAMES})$", re.I)
 # Edge adds the profile: «Title - Personal - Microsoft Edge».
 PROFILE_SUFFIX = re.compile(rf"{DASH}[^-–—]+{DASH}Microsoft\W*Edge$", re.I)
+# Chromium names the profile after the browser when there are several: «Title - Google Chrome - Wilson».
+TRAILING_PROFILE = re.compile(rf"{DASH}(?:Google Chrome|Brave|Vivaldi|Chromium|Opera){DASH}[^-–—]+$", re.I)
 # A page counts for a window when it was visited this long before the window came to the front, or while it was there.
 VISIT_LEAD_SECONDS = 1800
 MORE_PAGES = re.compile(r"\s+and \d+ more pages?$", re.I)
@@ -46,7 +48,7 @@ def page_titles(window_title: object) -> List[str]:
     """The page titles a browser window title can stand for, most likely first. Empty when it names no browser."""
     title = "".join(c for c in str(window_title or "") if unicodedata.category(c) != "Cf").strip()
     found: List[str] = []
-    for pattern in (SUFFIX, PROFILE_SUFFIX):
+    for pattern in (SUFFIX, PROFILE_SUFFIX, TRAILING_PROFILE):
         match = pattern.search(title)
         if match:
             stripped = title[: match.start()].strip()

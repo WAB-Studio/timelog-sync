@@ -334,3 +334,17 @@ def test_pieces_add_before_the_seconds_are_cut_so_none_is_lost():
 def test_other_private_markers_are_dropped():
     for title in ["x - Brave (Private)", "x - Vivaldi (Private)", "x - Mozilla Firefox (Private Browsing)", "Ventana de Incógnito"]:
         assert timelog.PRIVATE_TITLE.search(title), title
+
+
+def test_running_wsl_distros_reads_utf16_output_and_tolerates_no_wsl():
+    raw = "﻿Ubuntu\r\ndocker-desktop\r\n\r\n".encode("utf-16-le")
+    assert timelog.running_wsl_distros(raw) == ["Ubuntu", "docker-desktop"]
+    assert timelog.running_wsl_distros(b"") == []
+
+
+def test_wsl_claude_dirs_keep_existing_home_and_root_folders_of_the_given_distros(tmp_path):
+    for sub in ("Ubuntu/home/cxrkeyb/.claude/projects", "Ubuntu/root/.claude/projects", "Ubuntu/home/nobody", "Other/home"):
+        (tmp_path / sub).mkdir(parents=True)
+    found = timelog.wsl_claude_dirs(["Ubuntu", "Other", "Gone"], share=lambda distro: str(tmp_path / distro))
+    assert found == [str(tmp_path / "Ubuntu/home/cxrkeyb/.claude/projects"), str(tmp_path / "Ubuntu/root/.claude/projects")]
+    assert timelog.wsl_claude_dirs([], share=lambda distro: str(tmp_path / distro)) == []

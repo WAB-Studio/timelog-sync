@@ -21,7 +21,7 @@ import os
 import re
 import socket
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -297,9 +297,44 @@ def claude_code_seconds(sessions: Iterable[Sequence[datetime]], days: List[date]
     return result
 
 
+def running_wsl_distros(output: Optional[bytes] = None) -> List[str]:
+    """Names of the WSL distros running now, from `wsl.exe -l --running -q` (UTF-16LE, with a BOM and NULs). Never starts one;
+    no wsl.exe or any error is none. `output` stands in for the command's bytes."""
+    if output is None:
+        try:
+            import subprocess
+
+            output = subprocess.run(["wsl.exe", "-l", "--running", "-q"], capture_output=True, timeout=10, check=True).stdout
+        except Exception:
+            return []
+    text = output.decode("utf-16-le", errors="replace") if b"\x00" in output else output.decode("utf-8", errors="replace")
+    names = [line.strip("\ufeff\x00 \t\r") for line in text.splitlines()]
+    return [name for name in names if name]
+
+
+def wsl_claude_dirs(distros: Sequence[str], share: Optional[Callable[[str], str]] = None) -> List[str]:
+    """Each running distro's `.claude/projects` of every home user and of root that exists, read through the wsl.localhost share."""
+    share = share or (lambda distro: "\\\\wsl.localhost\\" + distro)
+    found: List[str] = []
+    for distro in distros:
+        base = share(distro)
+        try:
+            homes = [os.path.join(base, "home", user) for user in sorted(os.listdir(os.path.join(base, "home")))]
+        except OSError:
+            homes = []
+        for home in homes + [os.path.join(base, "root")]:
+            folder = os.path.join(home, ".claude", "projects")
+            if os.path.isdir(folder):
+                found.append(folder)
+    return found
+
+
 def default_claude_dirs() -> List[str]:
-    """`~/.claude/projects`: %USERPROFILE%\\.claude\\projects on Windows."""
-    return [os.path.join(os.path.expanduser("~"), ".claude", "projects")]
+    """`~/.claude/projects` (%USERPROFILE%\\.claude\\projects on Windows), and on Windows that of every WSL distro running now."""
+    folders = [os.path.join(os.path.expanduser("~"), ".claude", "projects")]
+    if os.name == "nt":
+        folders += wsl_claude_dirs(running_wsl_distros())
+    return folders
 
 
 def claude_dirs_from(value: object) -> List[str]:

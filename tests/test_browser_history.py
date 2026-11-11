@@ -180,3 +180,9 @@ def test_opera_and_arc_are_searched_in_their_usual_places(tmp_path):
         chromium_db(str(folder / "History"), [("https://a.com/", "A", NOW)])
     found = bh.history_files(None, {"APPDATA": str(tmp_path / "roaming"), "LOCALAPPDATA": str(tmp_path / "local")})
     assert str(opera / "History") in found and str(arc / "History") in found
+
+
+def test_a_chrome_title_with_its_profile_name_still_gives_the_page_title():
+    from aw_client import browser_history
+
+    assert browser_history.page_titles("Inbox - Google Chrome - Wilson") == ["Inbox"]
