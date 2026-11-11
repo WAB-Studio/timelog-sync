@@ -31,8 +31,11 @@ def message(subject="Compra", text="Compra por $10.000", html="<p>Compra</p>"):
 class Fake:
     """Gmail, Google's token endpoint and HomeFund, in one stub of `_http`."""
 
-    def __init__(self, ids=(), homefund=(200,)):
+    def __init__(self, ids=(), homefund=(200,), address="me@gmail.com", reads=()):
         self.ids = list(ids)
+        self.address = address
+        # Statuses for the next message reads; 200 once it runs out.
+        self.reads = list(reads)
         self.homefund = list(homefund)
         self.calls = []
         self.posted = []
@@ -46,10 +49,16 @@ class Fake:
             self.posted.append(json.loads(body))
             status = self.homefund.pop(0) if len(self.homefund) > 1 else self.homefund[0]
             return status, b"{}"
+        if url.endswith("/profile?"):
+            return 200, json.dumps({"emailAddress": self.address}).encode()
         if "/messages?" in url:
             return 200, json.dumps({"messages": [{"id": i} for i in self.ids]}).encode()
         if "/messages/" in url:
             assert "format=full" in url
+            if self.reads and self.reads[0] != 200:
+                return self.reads.pop(0), b'{"error": {"message": "Quota exceeded for quota metric: Units per minute per user"}}'
+            if self.reads:
+                self.reads.pop(0)
             return 200, json.dumps(message(subject=url.rsplit("/", 1)[1].split("?")[0])).encode()
         raise AssertionError(url)
 
@@ -58,7 +67,8 @@ class Fake:
 
 
 @pytest.fixture
-def setup(tmp_path):
+def setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(gmail_inbox, "READ_SPACING_SECONDS", 0)
     folder = tmp_path / "gmail"
     folder.mkdir()
     account = folder / "me@gmail.com.json"
@@ -72,6 +82,8 @@ def test_settings_default_to_every_ten_minutes_and_the_banks_query():
     assert settings["gmail_minutes"] == 10
     assert settings["homefund_url"] == "https://our-piggy-bank.vercel.app"
     assert "nequi.com.co" in settings["gmail_query"]
+    assert "-from:info.lulobank.com" in settings["gmail_query"]
+    assert "-subject:(extracto OR rechazada" in settings["gmail_query"]
 
 
 def test_extract_reads_subject_and_both_bodies():
@@ -312,3 +324,93 @@ def test_removing_an_account_still_deletes_when_the_revoke_fails(setup):
 
     gmail_inbox.remove_account(account, boom)
     assert not os.path.exists(account)
+
+
+def test_two_files_for_one_address_forward_each_email_once(setup, monkeypatch):
+    tmp, account, settings = setup
+    copy = os.path.join(os.path.dirname(account), "me.json")
+    open(copy, "w", encoding="utf-8").write(open(account, encoding="utf-8").read())
+    gmail_inbox.run_round(str(tmp), settings, NOW)
+    fake = Fake(ids=["m1", "m2"])
+    monkeypatch.setattr(gmail_inbox, "_http", fake)
+    assert gmail_inbox.run_round(str(tmp), settings, NOW + 600) == 2
+    assert [p["subject"] for p in fake.posted] == ["m1", "m2"]
+    # The address is cached: a later round asks Google for the profile no more.
+    profiles = [u for _, u, _ in fake.calls if u.endswith("/profile?")]
+    assert len(profiles) == 2
+    fake2 = Fake(ids=[])
+    monkeypatch.setattr(gmail_inbox, "_http", fake2)
+    gmail_inbox.run_round(str(tmp), settings, NOW + 1200)
+    assert not [u for _, u, _ in fake2.calls if u.endswith("/profile?")]
+    assert json.load(open(account[:-5] + ".state"))["address"] == "me@gmail.com"
+
+
+def test_two_different_addresses_are_both_polled(setup, monkeypatch):
+    tmp, account, settings = setup
+    other = os.path.join(os.path.dirname(account), "you@gmail.com.json")
+    open(other, "w", encoding="utf-8").write(open(account, encoding="utf-8").read())
+    gmail_inbox.run_round(str(tmp), settings, NOW)
+    fake = Fake(ids=[])
+    monkeypatch.setattr(gmail_inbox, "_http", fake)
+    gmail_inbox.run_round(str(tmp), settings, NOW + 600)
+    assert len(fake.queries()) == 1  # same fake address for both: one is skipped
+    assert gmail_inbox.list_accounts(str(tmp)) == sorted([account, other])
+
+
+def test_connect_account_replaces_the_file_of_the_same_address(tmp_path, monkeypatch):
+    import urllib.parse
+    import urllib.request
+
+    folder = tmp_path / "gmail"
+    folder.mkdir()
+    old = folder / "me.json"
+    old.write_text(json.dumps({"client-id": "c", "client-secret": "s", "refresh-token": "old"}), encoding="utf-8")
+    (folder / "me.state").write_text(json.dumps({"after": 5, "sent": ["x"], "address": "me@gmail.com"}), encoding="utf-8")
+
+    def browser(url):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        address = f"{query['redirect_uri'][0]}/?code=abc&state={query['state'][0]}"
+        threading.Thread(target=lambda: urllib.request.urlopen(address, timeout=10).read(), daemon=True).start()
+
+    def fake(method, url, headers=None, body=None):
+        if url == gmail_inbox.TOKEN_URL:
+            return 200, json.dumps({"access_token": "at", "refresh_token": "new"}).encode()
+        return 200, json.dumps({"emailAddress": "me@gmail.com"}).encode()
+
+    monkeypatch.setattr(gmail_inbox, "_http", fake)
+    gmail_inbox.connect_account(str(tmp_path), "cid", "sec", open_browser=browser, wait_seconds=10)
+    assert sorted(os.listdir(folder)) == ["me.json", "me.state"]
+    assert json.load(open(old))["refresh-token"] == "new"
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_gmail_rate_limit_is_retried_next_round_and_nothing_is_lost(setup, monkeypatch, status):
+    tmp, account, settings = setup
+    gmail_inbox.run_round(str(tmp), settings, NOW)
+    # m1 goes out, m2 trips the limit, m3 is never reached this round.
+    fake = Fake(ids=["m1", "m2", "m3"], reads=[200, status])
+    monkeypatch.setattr(gmail_inbox, "_http", fake)
+    assert gmail_inbox.run_round(str(tmp), settings, NOW + 7200) == 1
+    state = json.load(open(account[:-5] + ".state"))
+    assert state["sent"] == ["m1"] and state["after"] == NOW
+    assert f"HTTP {status}" in gmail_inbox.account_status(account, NOW + 7200)["error"]
+    fake = Fake(ids=["m1", "m2", "m3"])
+    monkeypatch.setattr(gmail_inbox, "_http", fake)
+    assert gmail_inbox.run_round(str(tmp), settings, NOW + 7800) == 2
+    assert [p["subject"] for p in fake.posted] == ["m2", "m3"]
+
+
+def test_a_403_that_is_not_a_quota_is_an_error_not_a_retry():
+    with pytest.raises(RuntimeError):
+        gmail_inbox._json(403, b'{"error": {"message": "Insufficient Permission"}}', "Gmail messages")
+
+
+def test_message_reads_are_spaced(setup, monkeypatch):
+    tmp, account, settings = setup
+    gmail_inbox.run_round(str(tmp), settings, NOW)
+    monkeypatch.setattr(gmail_inbox, "READ_SPACING_SECONDS", 0.5)
+    pauses = []
+    monkeypatch.setattr(gmail_inbox.time, "sleep", pauses.append)
+    monkeypatch.setattr(gmail_inbox, "_http", Fake(ids=["m1", "m2"]))
+    gmail_inbox.run_round(str(tmp), settings, NOW + 600)
+    assert pauses == [0.5, 0.5]

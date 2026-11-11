@@ -87,13 +87,17 @@ movement. Off until an account is connected and a HomeFund key is pasted.
    as `gmail/<address>.json` in the config folder. Repeat for each account.
 
 Settings in `aw-timelog.toml`: `gmail_minutes` (10; 0 turns Gmail off), `gmail_query` (the banks: Bancolombia, Nequi,
-Lulo, Nu, Falabella, Banco de Bogotá, ACH, Davivienda, BBVA, Daviplata; the value replaces it), `gmail_client_id`,
+Lulo, Nu, Banco de Bogotá, ACH, Davivienda, BBVA, Daviplata, minus info.lulobank.com marketing and subjects
+with «extracto», «rechazada» or «reporte de movimiento»; the value replaces it), `gmail_client_id`,
 `gmail_client_secret`, `homefund_url` (https://our-piggy-bank.vercel.app), `homefund_key`.
 
 Each round, per account: refresh the access token, list `gmail_query after:<time>`, read each new message and POST
 `{subject, text, html}` to `<homefund_url>/api/webhooks/email`. HomeFund does not dedupe, so `gmail/<address>.state`
 keeps the last time and the ids already sent: each email goes once. A first run starts from now and never
-backfills. A 5xx or no network is tried again next round; a 401 or 422 is logged and that email is skipped.
+backfills. Two token files for one Gmail address (found by `users/me/profile`, cached in the state as `address`)
+are polled once, and «Conectar otra cuenta» replaces the file of an address already connected. Messages are read
+0.2 s apart; a 5xx, no network or a Gmail rate limit (429, or 403 «Quota exceeded») is tried again next round,
+keeping the time and the ids already sent; a 401 or 422 is logged and that email is skipped.
 Gmail runs in its own thread: a failure there never touches the TimeLog upload.
 
 Privacy: access is read-only (`gmail.readonly`). Only the subject and body of emails matching `gmail_query` leave

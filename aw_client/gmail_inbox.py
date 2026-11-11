@@ -31,9 +31,9 @@ GMAIL_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
 SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 DEFAULT_HOMEFUND_URL = "https://our-piggy-bank.vercel.app"
 DEFAULT_QUERY = (
-    "from:(notificacionesbancolombia.com OR nequi.com.co OR lulobank.com OR nu.com.co OR bancofalabella.com"
-    " OR bancodebogota.com.co OR bancodebogota.net OR achcolombia.com.co OR davivienda.com OR bbva.com.co"
-    " OR daviplata.com)"
+    "from:(an.notificacionesbancolombia.com OR ayn.notificacionesbancolombia.com OR nequi.com.co OR lulobank.com"
+    " OR nu.com.co OR achcolombia.com.co OR bancodebogota.com.co OR davivienda.com OR bbva.com.co OR daviplata.com)"
+    ' -from:info.lulobank.com -subject:(extracto OR rechazada OR "reporte de movimiento")'
 )
 HOMEFUND_KEY_PATTERN = re.compile(r"whk_[A-Za-z0-9_-]{16,}")
 # HomeFund's Ajustes shows «<client_id> <client_secret>» on one line.
@@ -47,10 +47,12 @@ OVERLAP_SECONDS = 3600
 SENT_KEPT = 1000
 CONNECT_WAIT_SECONDS = 300
 HTTP_TIMEOUT = 30
+# Gmail caps reads per minute per user; a burst of message reads trips it.
+READ_SPACING_SECONDS = 0.2
 
 
 class Retry(Exception):
-    """A 5xx or a network failure: the next round tries again."""
+    """A 5xx, a rate limit (429, or 403 «Quota exceeded») or a network failure: the next round tries again."""
 
 
 def _http(method: str, url: str, headers: Optional[Dict[str, str]] = None, body: Optional[bytes] = None) -> Tuple[int, bytes]:
@@ -65,7 +67,7 @@ def _http(method: str, url: str, headers: Optional[Dict[str, str]] = None, body:
 
 
 def _json(status: int, raw: bytes, what: str) -> dict:
-    if status >= 500:
+    if status >= 500 or status == 429 or (status == 403 and b"uota" in raw) or (status == 403 and b"rateLimitExceeded" in raw):
         raise Retry(f"{what}: HTTP {status}")
     if status != 200:
         raise RuntimeError(f"{what}: HTTP {status}")
@@ -162,6 +164,26 @@ def remove_account(path: str, revoke: Callable[[str], bool] = revoke_token) -> N
             os.remove(name)
         except OSError:
             pass
+
+
+def _state_path(path: str) -> str:
+    return path[: -len(".json")] + ".state"
+
+
+def account_address(path: str) -> Optional[str]:
+    """The Gmail address of an account, from `users/me/profile`, cached in its state file.
+
+    None when the account has no state yet (its first round only records the start time) or is incomplete."""
+    account = _read_json(path)
+    state = _read_json(_state_path(path))
+    if state is None or not account or not all(account.get(k) for k in ("client-id", "client-secret", "refresh-token")):
+        return None
+    if state.get("address"):
+        return str(state["address"])
+    address = str(_get(access_token(account), "profile", {})["emailAddress"]).strip().lower()
+    state["address"] = address
+    _write_json(_state_path(path), state)
+    return address
 
 
 def list_accounts(config_dir: str) -> List[str]:
@@ -263,28 +285,58 @@ def poll_account(path: str, settings: dict, now: float) -> int:
     sent = [str(i) for i in state.get("sent", [])]
     token = access_token(account)
     clean = True
-    error = ""
+    failure = ""
     count = 0
     for message_id in list_message_ids(token, settings["gmail_query"], after):
         if message_id in sent:
             continue
-        email = extract(_get(token, f"messages/{message_id}", {"format": "full"}))
+        try:
+            email = extract(_get(token, f"messages/{message_id}", {"format": "full"}))
+        except Retry as limited:
+            # Gmail's rate limit: stop reading, keep what was already forwarded and retry the rest next round.
+            logger.warning(f"Gmail did not give a message, trying again next round: {limited}")
+            clean = False
+            failure = str(limited)
+            break
         try:
             outcome = forward(settings["homefund_url"], settings["homefund_key"], email)
-        except Retry as error:
-            logger.warning(f"HomeFund did not take a bank email, trying again next round: {error}")
+        except Retry as refused:
+            logger.warning(f"HomeFund did not take a bank email, trying again next round: {refused}")
             clean = False
-            error = str(error)
-            continue
-        sent.append(message_id)
-        count += outcome == "sent"
+            failure = str(refused)
+        else:
+            sent.append(message_id)
+            count += outcome == "sent"
+        time.sleep(READ_SPACING_SECONDS)
     # A message left over for the next round keeps `after` where it was.
     if clean:
         after = max(after, int(now) - OVERLAP_SECONDS)
     state.update({"after": after, "sent": sent[-SENT_KEPT:]})
-    _record(state, now, count, error)
+    _record(state, now, count, failure)
     _write_json(state_path, state)
     return count
+
+
+def _distinct_accounts(config_dir: str, now: float) -> List[str]:
+    """The accounts to poll: one file per address, the one named after the address first."""
+    found: List[Tuple[str, Optional[str]]] = []
+    for path in list_accounts(config_dir):
+        try:
+            found.append((path, account_address(path)))
+        except Exception as error:
+            logger.warning(f"Gmail {os.path.basename(path)}: could not read its address ({error}); skipping it this round.")
+            record_error(path, str(error) if isinstance(error, Retry) else f"{type(error).__name__}: {error}", now)
+    found.sort(key=lambda item: item[1] is None or os.path.basename(item[0]) != f"{item[1]}.json")
+    claimed = set()
+    chosen = []
+    for path, address in found:
+        if address is not None:
+            if address in claimed:
+                logger.warning(f"Gmail {os.path.basename(path)} repeats the address {address}; ignoring it.")
+                continue
+            claimed.add(address)
+        chosen.append(path)
+    return sorted(chosen)
 
 
 def run_round(config_dir: str, settings: dict, now: Optional[float] = None) -> int:
@@ -296,7 +348,7 @@ def run_round(config_dir: str, settings: dict, now: Optional[float] = None) -> i
             logger.info("No HomeFund key yet: paste one from the tray, in «TimeLog y correos…».")
         return 0
     total = 0
-    for path in list_accounts(config_dir):
+    for path in _distinct_accounts(config_dir, now):
         try:
             total += poll_account(path, settings, now)
         except Retry as error:
@@ -369,7 +421,23 @@ def connect_account(config_dir: str, client_id: str, client_secret: str, open_br
         raise RuntimeError("Google returned no refresh token.")
     address = _get(tokens["access_token"], "profile", {})["emailAddress"].strip().lower()
     safe = re.sub(r"[^a-z0-9@._+-]", "_", address)
-    _write_json(os.path.join(gmail_dir(config_dir), f"{safe}.json"), {"client-id": client_id, "client-secret": client_secret, "refresh-token": tokens["refresh_token"]})
+    # An account already saved for this address keeps its file (and its state); extra copies go.
+    same = []
+    for existing in list_accounts(config_dir):
+        try:
+            if account_address(existing) == address or os.path.basename(existing) == f"{safe}.json":
+                same.append(existing)
+        except Exception:
+            pass
+    same.sort(key=lambda item: os.path.basename(item) != f"{safe}.json")
+    target = same[0] if same else os.path.join(gmail_dir(config_dir), f"{safe}.json")
+    for extra in same[1:]:
+        for name in (extra, _state_path(extra)):
+            try:
+                os.remove(name)
+            except OSError:
+                pass
+    _write_json(target, {"client-id": client_id, "client-secret": client_secret, "refresh-token": tokens["refresh_token"]})
     return address
 
 
