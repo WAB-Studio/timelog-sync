@@ -4,7 +4,7 @@ person's own eyes: per app and per window title, per website hostname and per pa
 its query and fragment, and its title), and Claude Code's active time per day and per session.
 Never an event, a URL's query, a message of Claude Code, or anything on the exclusion list.
 
-Left out before anything is built: private windows (a title naming one is dropped), and every host
+Left out before anything is built: private windows (their seconds count nowhere, not even in the browser's app row), and every host
 or app on the exclusion list (banks and password managers by default).
 
 The app query keeps the window events that overlap a not-AFK stretch and merges them by app,
@@ -474,6 +474,65 @@ def upload(url: str, key: str, body: dict, timeout: float = 30) -> dict:
     return response.json()
 
 
+def _free_pieces(start: float, stop: float, private: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """[start, stop) minus the (sorted) private stretches, as the pieces left."""
+    pieces: List[Tuple[float, float]] = []
+    cursor = start
+    for begin, end in private:
+        if end <= cursor or begin >= stop:
+            continue
+        if begin > cursor:
+            pieces.append((cursor, begin))
+        cursor = max(cursor, end)
+    if cursor < stop:
+        pieces.append((cursor, stop))
+    return pieces
+
+
+def drop_private(
+    results: List[List[dict]], browsers: List[List[dict]], store: Optional[object] = None
+) -> Tuple[List[List[dict]], List[List[dict]]]:
+    """Time in a private window counts nowhere. Per day, each focused browser event loses the seconds that overlap the
+    poller's private samples, or all of it when its title names a private window; those seconds leave the browser's app
+    row too, so apps, sites and pages agree. Only browsers are touched."""
+    clean_results: List[List[dict]] = []
+    clean_browsers: List[List[dict]] = []
+    for rows, events in zip(results, browsers):
+        removed: Dict[str, float] = {}
+        kept: List[dict] = []
+        for event in events:
+            data = event.get("data", {})
+            duration = float(event.get("duration", 0))
+            stamp = parse_stamp(event.get("timestamp"))
+            start = stamp.timestamp() if stamp else 0.0
+            if PRIVATE_TITLE.search(str(data.get("title") or "")):
+                pieces: List[Tuple[float, float]] = []
+            elif store is not None and start and duration > 0:
+                samples = [(sample.start, sample.end) for sample in store.between(start, start + duration) if sample.private]  # type: ignore[attr-defined]
+                if not samples:
+                    kept.append(event)
+                    continue
+                pieces = _free_pieces(start, start + duration, sorted(samples))
+            else:
+                kept.append(event)
+                continue
+            app = str(data.get("app"))
+            removed[app] = removed.get(app, 0) + duration - sum(end - begin for begin, end in pieces)
+            for begin, end in pieces:
+                kept.append({**event, "timestamp": datetime.fromtimestamp(begin, timezone.utc).isoformat(), "duration": end - begin})
+        adjusted: List[dict] = []
+        for row in rows:
+            app = str(row.get("data", {}).get("app"))
+            take = min(removed.get(app, 0), float(row.get("duration", 0)))
+            if take > 0:
+                removed[app] -= take
+                row = {**row, "duration": float(row.get("duration", 0)) - take}
+            adjusted.append(row)
+        clean_results.append(adjusted)
+        clean_browsers.append(kept)
+    return clean_results, clean_browsers
+
+
 def _page_event(seconds: float, url: str, title: str) -> dict:
     return {"duration": seconds, "data": {"url": url, "title": title}}
 
@@ -546,6 +605,7 @@ def sync(
     from .address_bar import AddressStore
 
     store = AddressStore(addresses_path) if addresses_path and os.path.isfile(addresses_path) else None
+    results, browsers = drop_private(results, browsers, store)
     pages = resolve_browser(browsers, history, store)
     # With neither a history nor samples on this computer the sites are left to the server.
     sites = pages if (history or store is not None) else None
