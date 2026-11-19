@@ -186,3 +186,45 @@ def test_a_chrome_title_with_its_profile_name_still_gives_the_page_title():
     from aw_client import browser_history
 
     assert browser_history.page_titles("Inbox - Google Chrome - Wilson") == ["Inbox"]
+
+
+def private_store(tmp_path, spans):
+    from aw_client import address_bar as ab
+
+    store = ab.AddressStore(str(tmp_path / "p.sqlite"))
+    base = datetime(2026, 10, 30, 15, 0, 0, tzinfo=timezone.utc).timestamp()
+    for begin, end in spans:
+        store.add(ab.Sample(base + begin, base + end, "", "", "", True))
+    return store
+
+
+def app_row(app, seconds):
+    return {"duration": seconds, "data": {"app": app}}
+
+
+def test_a_browser_event_half_private_uploads_only_the_other_half(tmp_path):
+    store = private_store(tmp_path, [(0, 50), (50, 100)])
+    results, browsers = timelog.drop_private([[app_row("chrome.exe", 200), app_row("Code.exe", 60)]], [[browser_event("Docs - Google Chrome", 200)]], store)
+    assert {row["app"]: row["seconds"] for row in timelog.summarize(results[0])} == {"chrome.exe": 100, "Code.exe": 60}
+    assert sum(event["duration"] for event in browsers[0]) == 100
+
+
+def test_a_fully_private_browser_event_uploads_nothing(tmp_path):
+    store = private_store(tmp_path, [(0, 200)])
+    results, browsers = timelog.drop_private([[app_row("chrome.exe", 200)]], [[browser_event("Docs - Google Chrome", 200)]], store)
+    assert timelog.summarize(results[0]) == []
+    assert browsers == [[]]
+
+
+def test_a_firefox_private_titled_event_uploads_nothing_even_without_samples():
+    results, browsers = timelog.drop_private(
+        [[app_row("firefox.exe", 90)]], [[browser_event("Example — Mozilla Firefox Private Browsing", 90, app="firefox.exe")]]
+    )
+    assert timelog.summarize(results[0]) == []
+    assert browsers == [[]]
+
+
+def test_a_non_browser_app_is_untouched_by_private_samples(tmp_path):
+    store = private_store(tmp_path, [(0, 200)])
+    results, _ = timelog.drop_private([[app_row("Code.exe", 200)]], [[]], store)
+    assert timelog.summarize(results[0]) == [{"app": "Code.exe", "seconds": 200}]

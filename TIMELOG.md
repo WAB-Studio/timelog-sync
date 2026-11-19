@@ -14,6 +14,7 @@ It never sends an event, a URL's query, a message of Claude Code, or anything on
 - **Private windows.** A window title naming a private window (Incognito, InPrivate, Private Browsing,
   «Modo incógnito», «Navegación privada»…) is dropped, and so is a window whose controls name one. Private
   windows are absent from the browsers' history anyway.
+  Their seconds count nowhere: they leave the browser's app row and the day's total, as if you were away. The address-bar reading (`poll_seconds` above 0, Windows) must stay on for incognito to be left out: Chrome's incognito title does not say so.
 - **The exclusion list.** Hosts (with their subdomains) and apps never sent: not as time, a site, a page or a
   title. It ships with Colombian banks (bancolombia.com, davivienda.com, bbva.com.co, nequi.com.co,
   daviplata.com) and password managers (1Password, Bitwarden, LastPass, Dashlane, KeePass, KeePassXC, NordPass,
